@@ -1,0 +1,70 @@
+# -----------------------------------------------------------------------
+# EnsemFormer / CycloFormer  —  default.yaml
+# -----------------------------------------------------------------------
+
+# Paths
+paths:
+  data_dir: data/cycpept           # directory containing CSV + optional PDB files
+  csv_file: pampa.csv              # relative to data_dir
+  pdb_dir: null                    # set to pdb subdirectory name if conformer_source=pdb
+  log_dir: experiments/            # base directory for run outputs
+  load_checkpoint: null            # path to .pth file to resume from
+
+# Data
+data:
+  conformer_source: smiles         # 'smiles' (RDKit on-the-fly) | 'pdb' (precomputed)
+  n_conformers: 8                  # number of conformers per molecule
+  ff: mmff                         # force field: 'mmff' | 'uff'
+  add_dummy_node: true             # add CPMP-style dummy node to atom graph
+  one_hot_formal_charge: false
+  split: 0                         # which train/val/test split index to use (0-9)
+  batch_size: 32
+  num_workers: 4
+  seed: 42
+
+# GNN Encoder (per-conformer backbone)
+gnn:
+  type: egnn                       # 'egnn' | 'cpmp'
+  # --- EGNN-specific ---
+  hidden_nf: 128                   # GNN hidden / output dimension (d_gnn)
+  n_layers: 4
+  attention: false
+  normalize: false
+  # --- CPMP-specific (ignored when type=egnn) ---
+  d_model: 128                     # CPMP hidden dimension (also d_gnn)
+  N: 4                             # number of CPMP encoder layers
+  h: 8                             # attention heads
+  N_dense: 2
+  lambda_attention: 0.3
+  lambda_distance: 0.3
+  dropout_cpmp: 0.1
+  distance_matrix_kernel: softmax
+
+# Conformer Transformer (over conformer tokens)
+conformer_transformer:
+  d_model: 128                     # must equal gnn.hidden_nf (or gnn.d_model)
+  n_heads: 4
+  n_layers: 2
+  d_ff: 256                        # FFN hidden dim (typically 2x or 4x d_model)
+  dropout: 0.1
+  pooling: cls                     # 'cls' | 'mean'
+  max_conformers: 16               # positional encoding table size
+
+# MLP Head
+head:
+  d_hidden: 64                     # hidden dim of 2-layer MLP head
+  dropout: 0.1
+
+# Training
+training:
+  epochs: 200
+  learning_rate: 0.001
+  weight_decay: 0.01
+  amp: false                       # mixed precision training
+  accumulate_grad_batches: 1
+  gradient_clip: null              # max gradient norm (null to disable)
+  eval_interval: 1                 # validate every N epochs
+  patience: 20                     # early stopping patience
+  delta: 0.0001                    # early stopping min improvement
+  silent: false                    # suppress tqdm progress bars
+  version: null                    # run version; auto-incremented if null

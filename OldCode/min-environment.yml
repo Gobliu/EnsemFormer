@@ -1,0 +1,10 @@
+name: cycpept3d
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - git-filter-repo
+  - matplotlib
+  - biopython
+  - openbabel
+prefix: /home/liuwei/miniforge3/envs/cycpept3d

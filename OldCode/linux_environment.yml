@@ -1,0 +1,40 @@
+name: cp3d
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - rdkit
+dependencies:
+  - python=3.11
+  # Core ML/Scientific packages
+  - pytorch=2.4.1
+  - pytorch-cuda=12.4
+  - numpy=1.26.4
+  - pandas
+  - scipy
+  - scikit-learn
+  - tqdm
+  - torchmetrics
+  
+  # Graph libraries
+  - dglteam/label/th24_cu124::dgl
+  
+  # Chemistry libraries
+  - rdkit
+  - openbabel
+  
+  # Jupyter ecosystem
+  - ipykernel
+  
+  # Utilities
+  - pyprojroot
+  - wandb
+  - tensorboard
+  
+  # Pip-only packages (not available in conda)
+  - pip
+  - pip:
+    - e3nn
+    - torch_geometric
+    - nvidia-ml-py
+    - git+https://github.com/NVIDIA/dllogger#egg=dllogger
