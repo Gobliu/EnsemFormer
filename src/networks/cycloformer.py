@@ -19,6 +19,7 @@ from tqdm import tqdm
 from models.Wrapper import Module
 from src.networks.egnn_encoder import EGNNEncoder, get_edges_batch, mean_pool_atoms
 from src.networks.cpmp_encoder import CPMPEncoder
+from src.networks.se3t_encoder import SE3TEncoder
 from src.utils import to_device
 
 
@@ -169,11 +170,13 @@ class CycloFormerModule(Module):
         max_conformers: int,
         device,
         local_rank: int,
+        mode: str = "ensemble",
         **gnn_kwargs,
     ):
         super().__init__(device, local_rank)
         self.gnn_type = gnn_type
         self.pooling = pooling
+        self.mode = mode
 
         if gnn_type == "egnn":
             self.gnn_encoder = EGNNEncoder(
@@ -193,8 +196,17 @@ class CycloFormerModule(Module):
                              "distance_matrix_kernel", "use_edge_features",
                              "integrated_distances", "scale_norm", "init_type")},
             )
+        elif gnn_type == "se3t":
+            self.gnn_encoder = SE3TEncoder(
+                in_node_nf=d_atom,
+                d_gnn=d_gnn,
+                **{k: v for k, v in gnn_kwargs.items()
+                   if k in ("num_layers", "num_channels", "num_degrees",
+                             "num_heads", "channels_div", "norm",
+                             "use_layer_norm", "low_memory")},
+            )
         else:
-            raise ValueError(f"Unknown gnn_type: {gnn_type!r}. Choose 'egnn' or 'cpmp'.")
+            raise ValueError(f"Unknown gnn_type: {gnn_type!r}. Choose 'egnn', 'cpmp', or 'se3t'.")
 
         self.proj = nn.Linear(d_gnn, d_model) if d_gnn != d_model else nn.Identity()
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
@@ -280,17 +292,66 @@ class CycloFormerModule(Module):
         graph_emb = self.gnn_encoder(src, src_mask, adj_flat, dist_flat, None)  # (B*N_conf, d_gnn)
         return graph_emb.view(B, N_conf, -1)  # (B, N_conf, d_gnn)
 
+    def _encode_conformers_se3t(self, batch: dict) -> torch.Tensor:
+        """Encode all conformers with SE3-Transformer via batched calls.
+
+        Expects batch to contain:
+            'node_feat'      : Tensor (B, N_conf, N_atoms, F)
+            'coords'         : Tensor (B, N_conf, N_atoms, 3)
+            'conformer_mask' : BoolTensor (B, N_conf)
+            'atom_mask'      : BoolTensor (B, N_atoms)  — optional
+
+        Returns
+        -------
+        Tensor  (B, N_conf, d_gnn)
+        """
+        node_feat = batch["node_feat"]   # (B, N_conf, N_atoms, F)
+        coords = batch["coords"]         # (B, N_conf, N_atoms, 3)
+        atom_mask = batch.get("atom_mask")  # (B, N_atoms) or None
+        B, N_conf, N_atoms, F = node_feat.shape
+
+        # Flatten: treat each (molecule, conformer) pair as one graph
+        h = node_feat.view(B * N_conf, N_atoms, F)
+        x = coords.view(B * N_conf, N_atoms, 3)
+
+        # Expand atom_mask to cover all conformers
+        if atom_mask is not None:
+            mask = atom_mask.unsqueeze(1).expand(-1, N_conf, -1).reshape(B * N_conf, N_atoms)
+        else:
+            mask = None
+
+        graph_emb = self.gnn_encoder(h, x, node_mask=mask)  # (B*N_conf, d_gnn)
+        return graph_emb.view(B, N_conf, -1)  # (B, N_conf, d_gnn)
+
     def encode_conformers(self, batch: dict) -> torch.Tensor:
         """Dispatch to the correct encoder and return (B, N_conf, d_model)."""
         if self.gnn_type == "egnn":
             tokens = self._encode_conformers_egnn(batch)
-        else:
+        elif self.gnn_type == "cpmp":
             tokens = self._encode_conformers_cpmp(batch)
+        else:
+            tokens = self._encode_conformers_se3t(batch)
         return self.proj(tokens)  # (B, N_conf, d_model)
 
     # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
+
+    def extract_features(self, batch: dict) -> torch.Tensor:
+        """Return per-conformer embeddings without prediction.
+
+        Parameters
+        ----------
+        batch : dict
+            Same keys as ``forward()``.
+
+        Returns
+        -------
+        Tensor  (B, N_conf, d_model)
+            Per-conformer feature vectors suitable as input to a downstream
+            transformer encoder or any other aggregation module.
+        """
+        return self.encode_conformers(batch)  # (B, N_conf, d_model)
 
     def forward(self, batch: dict) -> torch.Tensor:
         """Full forward pass.
@@ -298,8 +359,9 @@ class CycloFormerModule(Module):
         Parameters
         ----------
         batch : dict with keys:
-            (EGNN) 'node_feat', 'coords', 'conformer_mask'
-            (CPMP) 'node_feat', 'adj', 'dist', 'atom_mask', 'conformer_mask'
+            (EGNN)  'node_feat', 'coords', 'conformer_mask'
+            (CPMP)  'node_feat', 'adj', 'dist', 'atom_mask', 'conformer_mask'
+            (SE3T)  'node_feat', 'coords', 'conformer_mask', optionally 'atom_mask'
 
         Returns
         -------
@@ -308,14 +370,23 @@ class CycloFormerModule(Module):
         tokens = self.encode_conformers(batch)  # (B, N_conf, d_model)
         B = tokens.size(0)
 
+        # ---- Standalone mode: skip conformer transformer ----
+        if self.mode == "standalone":
+            conf_mask = batch.get("conformer_mask")
+            if conf_mask is not None:
+                mask = conf_mask.unsqueeze(-1).to(dtype=tokens.dtype)  # (B, N_conf, 1)
+                pooled = (tokens * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+            else:
+                pooled = tokens.mean(dim=1)
+            return self.head(pooled)  # (B, 1)
+
+        # ---- Ensemble mode: conformer transformer ----
         cls = self.cls_token.expand(B, -1, -1)  # (B, 1, d_model)
         tokens = torch.cat([cls, tokens], dim=1)  # (B, N_conf+1, d_model)
 
         # Build key_padding_mask: True means IGNORE.
-        # CLS token (position 0) is never masked.
         conf_mask = batch.get("conformer_mask")  # (B, N_conf) — True where conformer exists
         if conf_mask is not None:
-            # Invert: True = real conformer → want False (don't mask); padding → True (mask)
             padding_mask = ~conf_mask  # (B, N_conf)
             cls_col = torch.zeros(B, 1, dtype=torch.bool, device=padding_mask.device)
             key_padding_mask = torch.cat([cls_col, padding_mask], dim=1)  # (B, N_conf+1)
@@ -327,7 +398,6 @@ class CycloFormerModule(Module):
         if self.pooling == "cls":
             pooled = out[:, 0, :]
         else:
-            # Mean over real conformer positions (exclude CLS)
             pooled = out[:, 1:, :].mean(dim=1)
 
         return self.head(pooled)  # (B, 1)

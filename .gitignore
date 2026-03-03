@@ -17,3 +17,8 @@ jobsub.sh
 
 # Virtual environments
 .venv
+
+# Upstream reference repos — track code, ignore large data/model files
+references/cpmp/data/
+references/cpmp/saved_model/
+references/cpmp/train_*/
