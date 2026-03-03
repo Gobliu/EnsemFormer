@@ -4,20 +4,25 @@
 
 # Paths
 paths:
-  data_dir: data/cycpept           # directory containing CSV + optional PDB files
-  csv_file: pampa.csv              # relative to data_dir
+  data_dir: data/                  # directory containing the CSV file
+  csv_file: CycPeptMPDB-4D.csv    # relative to data_dir
+  traj_dir: /home/liuw/GitHub/Data/CycPeptMPDB_4D   # root of CycPeptMPDB_4D (cycpeptmpdb mode)
   pdb_dir: null                    # set to pdb subdirectory name if conformer_source=pdb
   log_dir: experiments/            # base directory for run outputs
   load_checkpoint: null            # path to .pth file to resume from
+  cache_file: null                 # path to .pt cache from scripts/featurize.py (null = featurize on-the-fly)
 
 # Data
 data:
-  conformer_source: smiles         # 'smiles' (RDKit on-the-fly) | 'pdb' (precomputed)
-  n_conformers: 8                  # number of conformers per molecule
-  ff: mmff                         # force field: 'mmff' | 'uff'
+  conformer_source: cycpeptmpdb    # 'smiles' | 'pdb' | 'cycpeptmpdb'
+  target_col: PAMPA                # column name in CSV to use as regression target
+  solvent: water                   # 'water' | 'hexane' | 'both'  — selects from traj cache at training time
+  rep_frame_only: false            # true = standalone (1 conformer); false = ensemble (n_conformers frames)
+  n_conformers: 10                 # frames sampled per molecule in ensemble mode
+  ff: mmff                         # force field for smiles mode
   add_dummy_node: true             # add CPMP-style dummy node to atom graph
   one_hot_formal_charge: false
-  split: 0                         # which train/val/test split index to use (0-9)
+  split: null                      # null = random 80/10/10; set to int for pre-defined split column
   batch_size: 32
   num_workers: 4
   seed: 42

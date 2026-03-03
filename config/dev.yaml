@@ -1,0 +1,88 @@
+# -----------------------------------------------------------------------
+# EnsemFormer / CycloFormer  —  dev.yaml  (thumb dataset, coding only)
+# -----------------------------------------------------------------------
+# Use with:  python scripts/main_train.py --config config/dev.yaml
+# data/thumb.csv + data/pdbs/ hold 10 molecules for fast dev iteration.
+# default.yaml is untouched and still points to the full dataset.
+# -----------------------------------------------------------------------
+
+# Paths
+paths:
+  data_dir: data/
+  csv_file: thumb.csv
+  traj_dir: data/
+  log_dir: experiments/
+  load_checkpoint: null
+  cache_file: null
+
+# Data
+data:
+  conformer_source: pdb
+  target_col: PAMPA
+  solvent: water
+  rep_frame_only: false
+  n_conformers: 5
+  ff: mmff
+  add_dummy_node: true
+  one_hot_formal_charge: false
+  split: null
+  batch_size: 4
+  num_workers: 0
+  seed: 42
+
+# GNN Encoder (per-conformer backbone)
+gnn:
+  type: egnn
+  mode: ensemble
+  # --- EGNN-specific ---
+  hidden_nf: 128
+  n_layers: 4
+  attention: false
+  normalize: false
+  # --- CPMP-specific (ignored when type=egnn) ---
+  d_model: 128
+  N: 4
+  h: 8
+  N_dense: 2
+  lambda_attention: 0.3
+  lambda_distance: 0.3
+  dropout_cpmp: 0.1
+  distance_matrix_kernel: softmax
+  # --- SE3T-specific (ignored when type != se3t) ---
+  se3t_num_layers: 4
+  num_channels: 32
+  num_degrees: 4
+  se3t_num_heads: 8
+  channels_div: 2
+  se3t_norm: true
+  se3t_use_layer_norm: true
+  se3t_low_memory: true
+
+# Conformer Transformer (over conformer tokens)
+conformer_transformer:
+  d_model: 128
+  n_heads: 4
+  n_layers: 2
+  d_ff: 256
+  dropout: 0.1
+  pooling: cls
+  max_conformers: 16
+
+# MLP Head
+head:
+  d_hidden: 64
+  dropout: 0.1
+
+# Training
+training:
+  epochs: 5
+  learning_rate: 0.001
+  weight_decay: 0.01
+  amp: false
+  accumulate_grad_batches: 1
+  gradient_clip: null
+  eval_interval: 1
+  patience: 20
+  delta: 0.0001
+  silent: false
+  version: null

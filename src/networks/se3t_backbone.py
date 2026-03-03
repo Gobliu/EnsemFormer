@@ -1,8 +1,8 @@
 """SE(3)-Transformer backbone adapted as a per-conformer graph encoder.
 
 Wraps the NVIDIA SE3Transformer (with graph pooling) to produce a fixed-size
-graph-level embedding per conformer, matching the interface of EGNNEncoder and
-CPMPEncoder.
+graph-level embedding per conformer, matching the interface of EGNNBackbone and
+CPMPBackbone.
 
 The encoder:
 1. Receives atom features + 3D coordinates (same as EGNN).
@@ -20,7 +20,7 @@ from src.se3_transformer.transformer import SE3Transformer
 from src.se3_transformer.fiber import Fiber
 
 
-class SE3TEncoder(nn.Module):
+class SE3TBackbone(nn.Module):
     """SE(3)-Transformer backbone that returns a graph-level embedding.
 
     Parameters

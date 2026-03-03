@@ -10,6 +10,7 @@ Usage:
 import argparse
 import logging
 import pathlib
+import sys
 import warnings
 
 import torch
@@ -18,6 +19,7 @@ import yaml
 
 # Anchor the repo root using __file__ — no relative ../ strings
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO_ROOT))
 
 
 def load_config(config_path: str, cli_overrides: dict) -> dict:
@@ -62,6 +64,8 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--n_conformers", type=int)
     parser.add_argument("--gnn_type", type=str, choices=["egnn", "cpmp", "se3t"])
     parser.add_argument("--mode", type=str, choices=["ensemble", "standalone"])
+    parser.add_argument("--solvent", type=str, choices=["water", "hexane", "both"])
+    parser.add_argument("--rep_frame_only", action="store_true")
     parser.add_argument("--seed", type=int)
     parser.add_argument("--version", type=int)
     parser.add_argument("--silent", action="store_true")
@@ -70,6 +74,7 @@ def get_args() -> argparse.Namespace:
 
 def main():
     warnings.simplefilter("ignore", FutureWarning)
+    warnings.simplefilter("ignore", UserWarning)  # DGL graphbolt C++ lib missing (harmless)
     torch.set_float32_matmul_precision("high")
 
     cli_args = get_args()
@@ -117,17 +122,19 @@ def main():
 
     datamodule = ConformerEnsembleDataModule(
         data_dir=_REPO_ROOT / paths_cfg["data_dir"],
-        csv_path=data_cfg.get("csv_file", "pampa.csv"),
-        conformer_source=data_cfg["conformer_source"],
+        csv_path=paths_cfg["csv_file"],
+        target_col=data_cfg["target_col"],
+        traj_dir=paths_cfg.get("traj_dir"),
+        solvent=data_cfg["solvent"],
         n_conformers=data_cfg["n_conformers"],
-        pdb_dir=paths_cfg.get("pdb_dir"),
-        split=data_cfg.get("split"),
-        ff=data_cfg["ff"],
+        rep_frame_only=data_cfg["rep_frame_only"],
+        split=data_cfg["split"],
         add_dummy_node=data_cfg["add_dummy_node"],
-        one_hot_formal_charge=data_cfg.get("one_hot_formal_charge", False),
+        one_hot_formal_charge=data_cfg["one_hot_formal_charge"],
         batch_size=data_cfg["batch_size"],
         num_workers=data_cfg["num_workers"],
         seed=data_cfg["seed"],
+        cache_file=paths_cfg.get("cache_file"),
     )
 
     # ------------------------------------------------------------------
@@ -139,16 +146,16 @@ def main():
 
     gnn_type = gnn_cfg["type"]
     if gnn_type == "egnn":
-        d_gnn = gnn_cfg.get("hidden_nf", 128)
+        d_gnn = gnn_cfg["hidden_nf"]
     elif gnn_type == "se3t":
-        d_gnn = gnn_cfg.get("num_degrees", 4) * gnn_cfg.get("num_channels", 32)
+        d_gnn = gnn_cfg["num_degrees"] * gnn_cfg["num_channels"]
     else:
-        d_gnn = gnn_cfg.get("d_model", 128)
+        d_gnn = gnn_cfg["d_model"]
 
     # Build SE3T-specific kwargs with renamed keys
     gnn_kwargs = {k: v for k, v in gnn_cfg.items()
                   if k not in ("type", "mode", "hidden_nf", "d_model")}
-    # Rename se3t-prefixed keys for SE3TEncoder constructor
+    # Rename se3t-prefixed keys for SE3TBackbone constructor
     if gnn_type == "se3t":
         rename_map = {
             "se3t_num_layers": "num_layers",

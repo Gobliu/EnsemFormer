@@ -9,7 +9,7 @@ import torch.distributed as dist
 from torch.utils.data import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel
 
-from models.Wrapper import Module
+from src.module import Module
 from src.callbacks import BaseCallback
 from src.loggers import Logger
 from src.data_module import DataModule

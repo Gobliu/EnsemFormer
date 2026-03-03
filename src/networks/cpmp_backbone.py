@@ -256,7 +256,7 @@ class PositionwiseFeedForward(nn.Module):
 # Graph-level encoder (new class for EnsemFormer)
 # ---------------------------------------------------------------------------
 
-class CPMPEncoder(nn.Module):
+class CPMPBackbone(nn.Module):
     """CPMP graph-transformer backbone that returns a graph-level embedding.
 
     Runs the atom-level Encoder (N transformer layers) and then mean-pools

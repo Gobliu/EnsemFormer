@@ -6,242 +6,243 @@
 # Single GPU
 python scripts/main_train.py
 
-# Multi-GPU (DDP)
-torchrun --nproc_per_node=4 scripts/main_train.py
+# With a custom config
+python scripts/main_train.py --config config/custom.yaml
 
-# With CLI overrides
-python scripts/main_train.py --batch_size 8 --maxlr 0.0001
+# Common CLI overrides (match keys in config/default.yaml sections)
+python scripts/main_train.py --gnn_type cpmp --learning_rate 5e-4 --epochs 100
+
+# Multi-GPU (DDP via torchrun)
+torchrun --nproc_per_node=2 scripts/main_train.py
 ```
 
 ---
 
-## Startup (`src/utils/config_loader.py`)
+## Startup (`scripts/main_train.py::load_config`)
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  Config.from_yaml_and_cli(config/default.yaml)         │
-│                                                          │
-│  1. Load YAML defaults                                   │
-│  2. Apply CLI --key value overrides                      │
-│  3. Resolve data file paths (relative to repo root)      │
-│  4. Compute derived fields:                              │
-│     effective_loss_weights = loss_weights[-S:]           │
-│  5. Resolve checkpoint: loadfile + run_dir               │
-│     load_weight = 'best' → find latest run_N/best.pth    │
-│     load_weight = 'last' → find latest run_N/last.pth    │
-│     load_weight = 'none' → train from scratch            │
-└──────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌──────────────────────────────────────────────────────────┐
-│  main(cfg)                                               │
-└──────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│  load_config(config/default.yaml, cli_overrides)           │
+│                                                            │
+│  1. Load YAML (paths / data / gnn / conformer_transformer  │
+│               / head / training sections)                  │
+│  2. Apply flat CLI --key value overrides:                  │
+│     --gnn_type  → config['gnn']['type']  (special rename)  │
+│     all others  → scan sections for matching key           │
+└────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌────────────────────────────────────────────────────────────┐
+│  main()                                                    │
+│   torch.set_float32_matmul_precision("high")               │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Step 1 — DDP + Device + Seed (`src/utils/distributed.py`, `src/utils/seed.py`)
+## Step 1 — Distributed + Device + Seed
 
 ```
-ddp_setup()
-  │  If RANK env var exists (torchrun): init NCCL process group
-  │  Otherwise: no-op (single-GPU mode)
+init_distributed()   (src/utils.py)
+  │  If torchrun (RANK env var): init NCCL process group → is_distributed=True
+  │  Otherwise: no-op (single-GPU)
   ▼
-device = cuda:{local_rank} or cpu
-torch.set_default_dtype(float64)
-set_global_seed(cfg.seed + rank)
-  │  Seeds: Python hashseed, random, numpy, torch, cuda
+local_rank = get_local_rank()
+world_size = dist.get_world_size()  (or 1)
+device = cuda:{local_rank}  (or cpu)
+torch.manual_seed(config['data']['seed'])
+
+logging: INFO on rank 0 only (or always silent if --silent)
 ```
 
 ---
 
-## Step 2 — Data Loading (`src/datasets.py`)
+## Step 2 — Data (`src/dataset.py`)
 
 ```
-build_dataloaders(cfg)
+ConformerEnsembleDataModule(
+    data_dir   = repo_root / paths.data_dir,
+    csv_path   = data.csv_file,            # default: pampa.csv
+    conformer_source = data.conformer_source,  # 'smiles' | 'pdb'
+    n_conformers     = data.n_conformers,  # default: 8
+    pdb_dir    = paths.pdb_dir,
+    split      = data.split,              # 0-9 cross-val index
+    ff         = data.ff,                 # 'mmff' | 'uff'
+    add_dummy_node        = data.add_dummy_node,
+    one_hot_formal_charge = data.one_hot_formal_charge,
+    batch_size  = data.batch_size,
+    num_workers = data.num_workers,
+    seed        = data.seed,
+)
   │
-  ├─ input_traj_range = cfg.input_steps  (= 8)
-  ├─ label_range = (input_traj_range - 1) + window_sliding
-  │
-  ├─ TrajectoryDataset(train_file, ..., time_step=cfg.time_step)
-  │    └─ Loads .pt, computes stride = round(time_step / native_time_gap)
-  │    └─ If stride > 1: subsamples qp[:, :, ::stride, :, :]
-  │    └─ Slices into input [2,T,N,3] / label [2,S,N,3]
-  │    └─ Truncated to dpt_train samples if set
-  │
-  ├─ TrajectoryDataset(valid_file, ...)
-  │    └─ Truncated to dpt_valid samples if set
-  │
-  ├─ DistributedSampler (if DDP, else None)
-  │
-  └─ DataLoader × 2 (train, val)
-       num_workers=8, pin_memory=True (if CUDA)
-       train: shuffle=True (or sampler)
-       val:   shuffle=False
-```
+  ├─ ConformerEnsembleDataset  (train)   ──┐
+  ├─ ConformerEnsembleDataset  (val)       ├─ split from CSV
+  └─ ConformerEnsembleDataset  (test)    ──┘
+       each molecule → ConformerEnsembleMolecule
+         .conformers : list[(node_features, adj_matrix, dist_matrix)]
+         .y          : float  (regression target)
 
----
-
-## Step 3 — Build Model (`src/build_model.py`)
-
-```
-build_model(cfg, device, box_size, raw_atom_id, mass)
-  │
-  ├─ Icosahedron(grid_radius=b[0], box_size)
-  ├─ PhiGenerator(ngrids, raw_atom_id,
-  │                rbf_n_per_bank, r_cut, rbf_learnable,
-  │                mlp_layers=phi_mlp_layers)
-  ├─ PsiGenerator(ngrids)
-  ├─ HalfStepUpdate(cfg, tau_init=time_step)  × 2  (q_updater, p_updater)
-  │
-  ├─ LUFNetRollout(tau, mass, box_size, ...)
-  │    └─ .to(device)
-  │
-  ├─ DDP wrap (if distributed)
-  │
-  └─ Returns: model, model_unwrapped, tau_params=[tau_q, tau_p]
-```
-
-See `docs/data_flow.md` for the full forward pass.
-
----
-
-## Step 4 — Build Loss (`src/loss.py`)
-
-```
-build_loss(cfg, box_size)
-  └─ Returns closure: loss_fn(q_pred_list, p_pred_list, qpl_label)
-     Uses: effective_loss_weights, loss_type ('mse'/'l1'/'smooth_l1')
+  conformer_collate_fn  pads atoms & conformers → batch dict
 ```
 
 ---
 
-## Step 5 — Optimizer + Scheduler (`src/optim.py`)
+## Step 3 — Model (`src/networks/cycloformer.py`)
 
 ```
-build_optimizer(model, cfg)
-  └─ Adam(lr=maxlr, weight_decay=weight_decay)  (or AdamW, SGD)
+CycloFormerModule(
+    gnn_type   = gnn.type,          # 'egnn' | 'cpmp' | 'se3t'
+    d_atom     = datamodule.d_atom,
+    d_gnn      = inferred from gnn config,
+    d_model    = conformer_transformer.d_model,
+    n_tf_heads = conformer_transformer.n_heads,
+    n_tf_layers= conformer_transformer.n_layers,
+    d_ff       = conformer_transformer.d_ff,
+    dropout    = conformer_transformer.dropout,
+    pooling    = conformer_transformer.pooling,    # 'cls' | 'mean'
+    max_conformers = conformer_transformer.max_conformers,
+    mode       = gnn.mode,          # 'ensemble' | 'standalone'
+    **gnn_kwargs,                   # encoder-specific params
+)
+  │
+  ├─ .gnn_encoder      → EGNNEncoder | CPMPEncoder | SE3TEncoder
+  ├─ .conformer_encoder → Transformer over conformer tokens  (ensemble mode)
+  ├─ .head             → 2-layer MLP → scalar
+  └─ .cls_token        → learnable CLS prepended to conformer sequence
 
-build_scheduler(optimizer, cfg)
-  └─ CosineAnnealingLR(T_max=end_epoch)
+DDP wrapping: only gnn_encoder is wrapped with DistributedDataParallel
+              (rank 0 logs parameter count)
 ```
 
 ---
 
-## Step 6 — Checkpoint Resume (`src/checkpoint.py`)
+## Step 4 — Logging (`src/loggers.py`)
 
 ```
-CheckpointManager(model_unwrapped, optimizer, run_dir, scheduler)
-  │
-  ├─ load(loadfile)
-  │    ├─ If loadfile exists: restore model, optimizer, scheduler state
-  │    │   → returns (start_epoch, best_v_loss)
-  │    ├─ If loadfile is None: train from scratch
-  │    │   → returns (0, inf)
-  │    └─ Safety: raises if run_dir has .pth files but loadfile is None
-  │       (prevents accidental overwrite)
-  │
-  └─ save_config(cfg)
-       └─ Dumps config.yaml snapshot into run_dir (rank 0 only)
+log_dir = repo_root / paths.log_dir / gnn.type / run_{version}/
+  │  version = training.version  or  auto-incremented from existing run_N dirs
+
+LoggerCollection([
+    CSVLogger(log_dir / 'logs' / 'csv'),       # metrics.csv + hparams.txt
+    TensorBoardLogger(log_dir / 'logs' / 'tsb'),
+])
+logger.log_hyperparams(config)   # writes full config at startup
 ```
 
 ---
 
-## Step 7 — Logger Init (`src/utils/log_utils.py`)
+## Step 5 — Callbacks (`src/callbacks.py`)
 
 ```
-TrainLogger(run_dir / 'train.log')
-  │  Opens file in append mode (supports resume)
-  │  Writes to both stdout and file; flushes after each line
-  │  No-op on non-main DDP ranks
-  │
-  ├─ Fresh start (start_epoch == 0):
-  │    log_start(logger, cfg, device, model, train_dataset, val_dataset)
-  │      → device, param count, hyperparams, dataset info, training settings
-  │
-  └─ Resume (start_epoch > 0):
-       log_resume(logger, start_epoch)
-         → "--- Resumed: <timestamp>, starting from epoch N ---"
+EarlyStoppingCallback(
+    patience  = training.patience,   # default: 20
+    delta     = training.delta,      # default: 0.0001
+    direction = 'max',               # maximise R²
+)
+
+AllMetricsCallback(logger, rescale_factor=1, prefix='valid')
+    tracks per-epoch:  MAE, RMSE, R², Pearson r
+    via torchmetrics (MeanAbsoluteError, MeanSquaredError, R2Score, PearsonCorrCoef)
 ```
 
 ---
 
-## Step 8 — Training Loop (`src/trainer.py`)
+## Step 6 — Training Loop (`src/trainer.py::Trainer.fit`)
 
 ```
-for epoch in range(start_epoch, end_epoch):
+module.configure_optimizers(config)
+  └─ AdamW(lr=training.learning_rate, weight_decay=training.weight_decay)
+     + optional LR scheduler (if configured)
+
+grad_scaler = GradScaler(enabled=training.amp)
+
+# Optional checkpoint resume
+if paths.load_checkpoint:
+    epoch_start = load_state(module, load_checkpoint, callbacks) + 1
+
+for epoch_idx in range(epoch_start, training.epochs):
     │
-    │  DDP sampler sync
-    │    train_sampler.set_epoch(epoch)  — ensures different
-    │    shuffling per epoch across ranks
+    │  DDP sync: train_sampler.set_epoch(epoch_idx)
     │
-    │  Train one epoch → returns avg train_loss
-    │       ┌──────────────────────────────────────────────────────┐
-    │       │  for batch in train_loader:                          │
-    │       │    cast to (device, float64)                         │
-    │       │    forward:  q_preds, p_preds = model(qp)            │
-    │       │    loss:     trajectory_loss(preds, label)           │
-    │       │    backward: loss.backward()                         │
-    │       │    clip:     clip_grad_norm_(grad_clip)              │
-    │       │    step:     optimizer.step()                        │
-    │       │    accumulate: total_loss, count                     │
-    │       │  return total_loss / count                           │
-    │       └──────────────────────────────────────────────────────┘
+    │  module.train_one_epoch(train_dataloader, epoch_idx, grad_scaler, callbacks, config)
+    │       ┌─────────────────────────────────────────────────────────┐
+    │       │  for batch in train_dataloader:                         │
+    │       │    forward:   pred = model(batch)                       │
+    │       │    loss:      MSE(pred, target)                         │
+    │       │    backward:  grad_scaler.scale(loss).backward()        │
+    │       │    clip:      gradient_clip (if set)                    │
+    │       │    step:      grad_scaler.step(optimizer)               │
+    │       │    accumulate: total_loss                               │
+    │       │  return mean train loss                                 │
+    │       └─────────────────────────────────────────────────────────┘
     │
-    │  Step LR scheduler (cosine: every epoch, no val_loss)
+    │  if lr_scheduler: lr_scheduler.step()     (once per epoch)
     │
-    │  Validate + log + checkpoint (every cfg.val_interval epochs)
-    │       ┌──────────────────────────────────────────────────────┐
-    │       │  val_loss = validate(model, val_loader)              │
-    │       │    └─ same as train but no_grad, no step             │
-    │       │                                                      │
-    │       │  log_metrics(epoch, lr, train_loss, val_loss, tau)   │
-    │       │    → writes to stdout + train.log                    │
-    │       │                                                      │
-    │       │  Save last.pth (all ranks check, rank 0 writes)      │
-    │       │                                                      │
-    │       │  if val_loss < best_v_loss:                          │
-    │       │    Save best.pth  (rank 0 only)                      │
-    │       └──────────────────────────────────────────────────────┘
+    │  if DDP: dist.all_reduce(loss) / world_size
+    │
+    │  logger.log_metrics({'train loss': loss_val}, epoch_idx)
+    │  callbacks.on_epoch_end(loss_val)
+    │
+    │  every training.eval_interval epochs (default: 1):
+    │       ┌─────────────────────────────────────────────────────────┐
+    │       │  module.evaluate_one_epoch(val_dataloader, ...)         │
+    │       │    → AllMetricsCallback.on_validation_step per batch    │
+    │       │                                                         │
+    │       │  AllMetricsCallback.on_validation_end(epoch)            │
+    │       │    → logs MAE / RMSE / R² / Pearson r                   │
+    │       │                                                         │
+    │       │  EarlyStoppingCallback.on_validation_end(epoch, R²)     │
+    │       │                                                         │
+    │       │  if R² == best R² so far:                               │
+    │       │    save_state → log_dir/best_epoch_ckpt.pth  (rank 0)   │
+    │       └─────────────────────────────────────────────────────────┘
+    │
+    │  if early_stopping.early_stop: break
     │
     ▼
+save_state → log_dir/last_epoch_ckpt.pth   (rank 0)
+callbacks.on_fit_end()   → logs best MAE / RMSE / R² / Pearson r
 ```
 
 ---
 
-## Step 9–10 — Cleanup
+## Step 7 — Test (`src/trainer.py::Trainer.test`)
 
 ```
-log_end(logger, best_v_loss, best_epoch)
-  → "Best val_loss: X at epoch Y"
-  → "Total time: Xh Ym Zs"
-  → closes log file
+trainer.test(modelmodule, datamodule, test_callbacks, config)
+  │
+  ├─ module.evaluate_one_epoch(test_dataloader, ...)
+  ├─ AllMetricsCallback.on_validation_end()
+  └─ returns {mae, rmse, r2, pearson}
 
-ddp_cleanup()    →  destroy process group (if DDP)
+logging.info(f"Test results: {metrics}")
 ```
 
 ---
 
-## File Layout (experiments/)
+## File Layout (`experiments/`)
 
 ```
 experiments/
-  └─ {model_name}/       e.g. "vanilla" or "maxlr=0.001-trans_dim=256"
+  └─ {gnn_type}/            e.g. egnn/ | cpmp/ | se3t/
        └─ run_0/
-                ├─ config.yaml   snapshot of training config
-                ├─ train.log     training log (appended on resume)
-                ├─ last.pth      latest checkpoint (overwritten each val_interval)
-                └─ best.pth      best validation loss
+                ├─ logs/
+                │    ├─ csv/
+                │    │    ├─ metrics.csv    all logged metrics (step-indexed)
+                │    │    └─ hparams.txt    flat key: value config snapshot
+                │    └─ tsb/
+                │         └─ events.out.*   TensorBoard event file
+                ├─ best_epoch_ckpt.pth      checkpoint at best validation R²
+                └─ last_epoch_ckpt.pth      checkpoint at end of training
 ```
 
 Each `.pth` contains:
 ```python
 {
-    'epoch': int,
-    'val_loss': float,
-    'model_state_dict': OrderedDict,
+    'state_dict':           OrderedDict,  # model weights (DDP-unwrapped)
     'optimizer_state_dict': dict,
-    'scheduler_state_dict': dict,   # if scheduler exists
+    'epoch':                int,
+    # + any fields added by callbacks via on_checkpoint_save
 }
 ```
 
@@ -249,19 +250,6 @@ Each `.pth` contains:
 
 ## LR Schedule
 
-```
-lr
- ▲
- │  maxlr ─┐
- │         │╲
- │         │  ╲
- │         │    ╲               Cosine annealing
- │         │      ╲             T_max = end_epoch
- │         │        ╲
- │         │          ──────╲
- │         │                  ╲─── → 0
- └─────────┴──────────────────────► epoch
-           0                    end_epoch
-```
-
-Cosine scheduler steps once per epoch (after training, before validation).
+Default: no scheduler (constant LR).
+To enable, configure a scheduler inside `module.configure_optimizers`.
+Scheduler steps once per epoch (after `train_one_epoch`, before validation).

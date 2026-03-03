@@ -118,7 +118,7 @@ class E_GCL(nn.Module):
 # Graph-level encoder (new class for EnsemFormer)
 # ---------------------------------------------------------------------------
 
-class EGNNEncoder(nn.Module):
+class EGNNBackbone(nn.Module):
     """EGNN backbone that returns a graph-level embedding, not a scalar.
 
     Applies ``embedding_in`` + N × E_GCL layers, then mean-pools atom hidden

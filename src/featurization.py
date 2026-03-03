@@ -93,7 +93,8 @@ def featurize_mol(
     conf = mol.GetConformer()
     pos_matrix = np.array(
         [[conf.GetAtomPosition(k).x, conf.GetAtomPosition(k).y, conf.GetAtomPosition(k).z]
-         for k in range(mol.GetNumAtoms())]
+         for k in range(mol.GetNumAtoms())],
+        dtype=np.float32,
     )
     dist_matrix = pairwise_distances(pos_matrix)
 
@@ -111,7 +112,11 @@ def featurize_mol(
         m[1:, 1:] = dist_matrix
         dist_matrix = m
 
-    return node_features, adj_matrix, dist_matrix
+        m = np.zeros((pos_matrix.shape[0] + 1, 3), dtype=np.float32)
+        m[1:] = pos_matrix
+        pos_matrix = m
+
+    return node_features, adj_matrix, dist_matrix, pos_matrix
 
 
 def pad_array(array: np.ndarray, shape: tuple, dtype=np.float32) -> np.ndarray:
@@ -214,8 +219,7 @@ def load_ensemble_from_smiles(
             logging.warning(f"EmbedMultipleConfs failed for SMILES: {smiles}. Trying 2D fallback.")
             AllChem.Compute2DCoords(mol)
             mol = Chem.RemoveHs(mol)
-            afm, adj, dist = featurize_mol(mol, add_dummy_node, one_hot_formal_charge)
-            return [(afm, adj, dist)]
+            return [featurize_mol(mol, add_dummy_node, one_hot_formal_charge)]
 
         if ff == "uff":
             AllChem.UFFOptimizeMoleculeConfs(mol, numThreads=0)
@@ -239,7 +243,8 @@ def load_ensemble_from_smiles(
             conf = mol.GetConformer(conf_id)
             pos_matrix = np.array(
                 [[conf.GetAtomPosition(k).x, conf.GetAtomPosition(k).y, conf.GetAtomPosition(k).z]
-                 for k in range(mol.GetNumAtoms())]
+                 for k in range(mol.GetNumAtoms())],
+                dtype=np.float32,
             )
             dist_matrix = pairwise_distances(pos_matrix)
 
@@ -260,7 +265,11 @@ def load_ensemble_from_smiles(
                 m[1:, 1:] = dist_matrix
                 dist_matrix = m
 
-            results.append((nf, adj, dist_matrix))
+                m = np.zeros((pos_matrix.shape[0] + 1, 3), dtype=np.float32)
+                m[1:] = pos_matrix
+                pos_matrix = m
+
+            results.append((nf, adj, dist_matrix, pos_matrix))
 
         return results
 
@@ -315,6 +324,80 @@ def _featurize_pdb_file(
         return None
 
     return featurize_mol(mol, add_dummy_node, one_hot_formal_charge)
+
+
+def load_frames_from_traj_pdb(
+    traj_path: str,
+    frame_indices: list[int] | None = None,
+    remove_h: bool = True,
+    add_dummy_node: bool = True,
+    one_hot_formal_charge: bool = False,
+) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """Load selected frames from a multi-MODEL trajectory PDB as a conformer ensemble.
+
+    Frame indices are 1-based (matching the renumbered MODEL numbers in the file).
+    If frame_indices is None, all frames are loaded.
+
+    Parameters
+    ----------
+    traj_path : str
+        Path to a trajectory PDB with sequential MODEL 1 … MODEL N blocks.
+    frame_indices : list[int] or None
+        1-based frame indices to extract. None means all frames.
+    remove_h : bool
+        Strip hydrogen atoms before featurization.
+    add_dummy_node : bool
+    one_hot_formal_charge : bool
+
+    Returns
+    -------
+    list of (node_features, adj_matrix, dist_matrix) tuples, one per frame.
+    Empty list if the file cannot be read or no frames succeed.
+    """
+    try:
+        with open(traj_path, "r") as f:
+            raw = f.read()
+    except OSError as e:
+        logging.error(f"[TrajPDB] Cannot open {traj_path}: {e}")
+        return []
+
+    # Split into per-frame blocks using MODEL/ENDMDL boundaries
+    frame_blocks: dict[int, str] = {}
+    current_idx: int | None = None
+    current_lines: list[str] = []
+
+    for line in raw.splitlines(keepends=True):
+        if line.startswith("MODEL"):
+            current_idx = int(line.split()[1])
+            current_lines = [line]
+        elif line.startswith("ENDMDL"):
+            if current_idx is not None:
+                current_lines.append(line)
+                frame_blocks[current_idx] = "".join(current_lines)
+                current_idx = None
+                current_lines = []
+        elif current_idx is not None:
+            current_lines.append(line)
+
+    if not frame_blocks:
+        logging.error(f"[TrajPDB] No MODEL blocks found in {traj_path}")
+        return []
+
+    target_indices = frame_indices if frame_indices is not None else sorted(frame_blocks.keys())
+
+    results = []
+    for idx in target_indices:
+        if idx not in frame_blocks:
+            logging.warning(f"[TrajPDB] Frame {idx} not found in {traj_path} (available: {min(frame_blocks)}-{max(frame_blocks)})")
+            continue
+        mol = Chem.MolFromPDBBlock(frame_blocks[idx], removeHs=remove_h, sanitize=True)
+        if mol is None:
+            logging.warning(f"[TrajPDB] RDKit failed to parse frame {idx} of {traj_path}, skipping.")
+            continue
+        out = featurize_mol(mol, add_dummy_node, one_hot_formal_charge)
+        results.append(out)
+
+    return results
 
 
 def load_ensemble_from_pdb(

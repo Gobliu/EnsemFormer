@@ -1,15 +1,8 @@
-"""Model wrappers exposing a minimal training/eval interface.
-
-Each wrapper encapsulates a specific architecture (SE3-Transformer, CPMP, EGNN)
-and provides core methods used by the training loop and inference.
-"""
+"""Abstract base class for EnsemFormer model modules."""
 
 import torch
 from abc import ABC, abstractmethod
 from tqdm import tqdm
-import os
-
-from src.utils import to_device, using_tensor_cores
 
 
 class Module(ABC):
@@ -47,10 +40,8 @@ class Module(ABC):
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
         }
-        # Add scheduler if it exists
         if self.lr_scheduler:
             state['scheduler_state_dict'] = self.lr_scheduler.state_dict()
-            
         torch.save(state, path)
 
     def load_checkpoint(self, path):
@@ -70,5 +61,3 @@ class Module(ABC):
             disable=disable,
             leave=leave,
         )
-
-# ... (Subclasses would then implement 'predict' specifically for their architecture)

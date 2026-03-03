@@ -16,10 +16,10 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from models.Wrapper import Module
-from src.networks.egnn_encoder import EGNNEncoder, get_edges_batch, mean_pool_atoms
-from src.networks.cpmp_encoder import CPMPEncoder
-from src.networks.se3t_encoder import SE3TEncoder
+from src.module import Module
+from src.networks.egnn_backbone import EGNNBackbone, get_edges_batch, mean_pool_atoms
+from src.networks.cpmp_backbone import CPMPBackbone
+from src.networks.se3t_backbone import SE3TBackbone
 from src.utils import to_device
 
 
@@ -153,7 +153,7 @@ class CycloFormerModule(Module):
     device : torch.device
     local_rank : int
     gnn_kwargs : dict
-        Forwarded to EGNNEncoder or CPMPEncoder.
+        Forwarded to EGNNBackbone or CPMPBackbone.
     """
 
     def __init__(
@@ -179,14 +179,14 @@ class CycloFormerModule(Module):
         self.mode = mode
 
         if gnn_type == "egnn":
-            self.gnn_encoder = EGNNEncoder(
+            self.gnn_encoder = EGNNBackbone(
                 in_node_nf=d_atom,
                 hidden_nf=d_gnn,
                 **{k: v for k, v in gnn_kwargs.items()
                    if k in ("n_layers", "in_edge_nf", "residual", "attention", "normalize", "tanh")},
             )
         elif gnn_type == "cpmp":
-            self.gnn_encoder = CPMPEncoder(
+            self.gnn_encoder = CPMPBackbone(
                 d_atom=d_atom,
                 d_model=d_gnn,
                 **{k: v for k, v in gnn_kwargs.items()
@@ -197,7 +197,7 @@ class CycloFormerModule(Module):
                              "integrated_distances", "scale_norm", "init_type")},
             )
         elif gnn_type == "se3t":
-            self.gnn_encoder = SE3TEncoder(
+            self.gnn_encoder = SE3TBackbone(
                 in_node_nf=d_atom,
                 d_gnn=d_gnn,
                 **{k: v for k, v in gnn_kwargs.items()
@@ -254,8 +254,8 @@ class CycloFormerModule(Module):
         h_flat = h.view(B * N_conf * N_atoms, F)
         x_flat = x.view(B * N_conf * N_atoms, 3)
 
-        edges, edge_attr = get_edges_batch(N_atoms, B * N_conf, device=self.device)
-        h_flat = self.gnn_encoder(h_flat, x_flat, edges, edge_attr)  # (B*N_conf*N_atoms, hidden_nf)
+        edges, _ = get_edges_batch(N_atoms, B * N_conf, device=self.device)
+        h_flat = self.gnn_encoder(h_flat, x_flat, edges, None)  # (B*N_conf*N_atoms, hidden_nf)
 
         # Mean-pool over atoms for each (batch, conformer) graph
         h_graphs = h_flat.view(B * N_conf, N_atoms, -1).mean(dim=1)  # (B*N_conf, hidden_nf)
