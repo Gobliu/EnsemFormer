@@ -64,8 +64,9 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--n_conformers", type=int)
     parser.add_argument("--gnn_type", type=str, choices=["egnn", "cpmp", "se3t"])
     parser.add_argument("--mode", type=str, choices=["ensemble", "standalone"])
-    parser.add_argument("--solvent", type=str, choices=["water", "hexane", "both"])
+    parser.add_argument("--env", nargs="+", type=str, help="Environments: water hexane")
     parser.add_argument("--rep_frame_only", action="store_true")
+    parser.add_argument("--use_bond_type", action="store_true")
     parser.add_argument("--seed", type=int)
     parser.add_argument("--version", type=int)
     parser.add_argument("--silent", action="store_true")
@@ -120,21 +121,24 @@ def main():
     paths_cfg = config["paths"]
     data_cfg = config["data"]
 
+    cache_file = paths_cfg.get("cache_file")
+    if cache_file:
+        cache_file = str(_REPO_ROOT / cache_file)
+
+    cfg_env = data_cfg["env"]
+    env = cfg_env if isinstance(cfg_env, list) else [cfg_env]
+
     datamodule = ConformerEnsembleDataModule(
         data_dir=_REPO_ROOT / paths_cfg["data_dir"],
         csv_path=paths_cfg["csv_file"],
-        target_col=data_cfg["target_col"],
-        traj_dir=paths_cfg.get("traj_dir"),
-        solvent=data_cfg["solvent"],
+        cache_file=cache_file,
+        env=env,
         n_conformers=data_cfg["n_conformers"],
         rep_frame_only=data_cfg["rep_frame_only"],
         split=data_cfg["split"],
-        add_dummy_node=data_cfg["add_dummy_node"],
-        one_hot_formal_charge=data_cfg["one_hot_formal_charge"],
         batch_size=data_cfg["batch_size"],
         num_workers=data_cfg["num_workers"],
         seed=data_cfg["seed"],
-        cache_file=paths_cfg.get("cache_file"),
     )
 
     # ------------------------------------------------------------------
@@ -154,7 +158,7 @@ def main():
 
     # Build SE3T-specific kwargs with renamed keys
     gnn_kwargs = {k: v for k, v in gnn_cfg.items()
-                  if k not in ("type", "mode", "hidden_nf", "d_model")}
+                  if k not in ("type", "mode", "hidden_nf", "d_model", "use_bond_type")}
     # Rename se3t-prefixed keys for SE3TBackbone constructor
     if gnn_type == "se3t":
         rename_map = {
@@ -180,6 +184,7 @@ def main():
         device=device,
         local_rank=local_rank,
         mode=gnn_cfg.get("mode", "ensemble"),
+        use_bond_type=gnn_cfg.get("use_bond_type", False),
         **gnn_kwargs,
     )
 

@@ -49,32 +49,21 @@ def test_featurize_mol_benzene():
     AllChem.MMFFOptimizeMolecule(mol)
     mol = Chem.RemoveHs(mol)
 
-    nf, adj, dist = featurize_mol(mol, add_dummy_node=True)
-    n_atoms = mol.GetNumAtoms() + 1  # +1 for dummy node
-    assert nf.shape[0] == n_atoms
+    nf, adj, dist, pos, bt = featurize_mol(mol)
+    n_atoms = mol.GetNumAtoms()
+    assert nf.shape == (n_atoms, 25)
     assert adj.shape == (n_atoms, n_atoms)
     assert dist.shape == (n_atoms, n_atoms)
-    # Dummy node row/col in dist should be 1e6
-    assert dist[0, 1] == pytest.approx(1e6)
-
-
-def test_featurize_mol_no_dummy():
-    from rdkit import Chem
-    from rdkit.Chem import AllChem
-    mol = Chem.MolFromSmiles("c1ccccc1")
-    mol = Chem.AddHs(mol)
-    AllChem.EmbedMolecule(mol, maxAttempts=5000)
-    mol = Chem.RemoveHs(mol)
-    nf, adj, dist = featurize_mol(mol, add_dummy_node=False)
-    assert nf.shape[0] == mol.GetNumAtoms()
+    assert pos.shape == (n_atoms, 3)
+    assert bt.shape == (n_atoms, n_atoms)
 
 
 def test_load_ensemble_from_smiles_basic():
     conformers = load_ensemble_from_smiles(
-        "c1ccccc1", n_conformers=4, ff="mmff", add_dummy_node=True
+        "c1ccccc1", n_conformers=4, ff="mmff"
     )
     assert len(conformers) > 0
-    nf, adj, dist = conformers[0]
+    nf, adj, dist, pos, bt = conformers[0]
     assert nf.ndim == 2
     assert adj.shape[0] == adj.shape[1]
     assert dist.shape == adj.shape
@@ -82,12 +71,12 @@ def test_load_ensemble_from_smiles_basic():
 
 def test_load_ensemble_from_smiles_all_share_topology():
     conformers = load_ensemble_from_smiles(
-        "CC(C)CC", n_conformers=3, ff="mmff", add_dummy_node=False
+        "CC(C)CC", n_conformers=3, ff="mmff"
     )
     if len(conformers) < 2:
         pytest.skip("Too few conformers generated")
-    nf0, adj0, dist0 = conformers[0]
-    nf1, adj1, dist1 = conformers[1]
+    nf0, adj0, dist0, pos0, bt0 = conformers[0]
+    nf1, adj1, dist1, pos1, bt1 = conformers[1]
     np.testing.assert_array_equal(nf0, nf1)
     np.testing.assert_array_equal(adj0, adj1)
     # Distance matrices should differ (different 3D geometries)

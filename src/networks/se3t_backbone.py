@@ -16,8 +16,8 @@ import torch.nn as nn
 
 import dgl
 
-from src.se3_transformer.transformer import SE3Transformer
-from src.se3_transformer.fiber import Fiber
+from src.se3_transformer_lib.transformer import SE3Transformer
+from src.se3_transformer_lib.fiber import Fiber
 
 
 class SE3TBackbone(nn.Module):
@@ -61,6 +61,7 @@ class SE3TBackbone(nn.Module):
         norm: bool = True,
         use_layer_norm: bool = True,
         low_memory: bool = True,
+        edge_channels: int = 0,
     ):
         super().__init__()
         self.d_gnn = d_gnn
@@ -68,6 +69,7 @@ class SE3TBackbone(nn.Module):
         fiber_in = Fiber({0: in_node_nf})
         fiber_hidden = Fiber.create(num_degrees, num_channels)
         fiber_out = Fiber({0: num_degrees * num_channels})
+        fiber_edge = Fiber({0: edge_channels}) if edge_channels > 0 else Fiber({})
 
         self.se3t = SE3Transformer(
             num_layers=num_layers,
@@ -76,7 +78,7 @@ class SE3TBackbone(nn.Module):
             fiber_out=fiber_out,
             num_heads=num_heads,
             channels_div=channels_div,
-            fiber_edge=Fiber({}),
+            fiber_edge=fiber_edge,
             return_type=0,
             pooling="avg",
             norm=norm,
@@ -94,6 +96,7 @@ class SE3TBackbone(nn.Module):
         x: torch.Tensor,
         node_mask: torch.Tensor | None = None,
         n_atoms: int | None = None,
+        bond_type: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Encode a batch of molecular graphs.
 
@@ -109,6 +112,9 @@ class SE3TBackbone(nn.Module):
         n_atoms : int or None
             If all molecules have the same number of atoms (no padding), pass
             the atom count here instead of ``node_mask``.
+        bond_type : LongTensor or None  (B, N_atoms, N_atoms)
+            Integer bond types (0=none, 1=single, 2=double, 3=triple, 4=aromatic).
+            When provided, one-hot encoded and passed as type-0 edge features.
 
         Returns
         -------
@@ -140,6 +146,14 @@ class SE3TBackbone(nn.Module):
             xi = x[i, :n, :]  # (n, 3)
             rel_pos = xi[src_ids] - xi[dst_ids]  # (n_edges, 3)
             g.edata['rel_pos'] = rel_pos
+
+            # Bond type edge features
+            if bond_type is not None:
+                bt_i = bond_type[i, :n, :n]  # (n, n)
+                bt_oh = torch.nn.functional.one_hot(bt_i.clamp(0, 4), num_classes=5).float()
+                bt_oh = bt_oh[..., 1:]  # drop class 0 → (n, n, 4)
+                g.edata['edge_feat'] = bt_oh[src_ids, dst_ids]  # (n_edges, 4)
+
             graphs.append(g)
 
         batched_graph = dgl.batch(graphs).to(device)
@@ -156,6 +170,11 @@ class SE3TBackbone(nn.Module):
         # For type-0 (scalar) input: shape (total_nodes, C, 1)
         node_feats_dict = {'0': all_node_feats.unsqueeze(-1)}
 
+        # Build edge features dict if bond types provided
+        edge_feats = None
+        if bond_type is not None:
+            edge_feats = {'0': batched_graph.edata['edge_feat'].unsqueeze(-1)}
+
         # Forward through SE3Transformer (with built-in avg pooling → (B, out_features))
-        pooled = self.se3t(batched_graph, node_feats_dict)  # (B, se3t_out_dim)
+        pooled = self.se3t(batched_graph, node_feats_dict, edge_feats=edge_feats)  # (B, se3t_out_dim)
         return self.proj(pooled)  # (B, d_gnn)

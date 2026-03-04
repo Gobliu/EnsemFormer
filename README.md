@@ -29,19 +29,26 @@ Conformer N ──┘                    [Transformer encoder]
 
 ## Data Preprocessing
 
-Parsing 5000+ trajectory PDB files is slow (~10–20 min for both solvents). Run `featurize.py` once to cache the featurized molecules to disk, then all subsequent training runs load from cache instantly.
+Parsing 5000+ trajectory PDB files is slow (~10–20 min for all envs). Run `traj_preprocess.py` once to cache the featurized molecules to disk, then all subsequent training runs load from cache instantly.
 
-### Step 1 — featurize (run once)
+### Step 1 — preprocess trajectories (run once)
 
 ```bash
-# Default config — saves to data/cache_cycpeptmpdb_traj_allframes.pt
-python scripts/featurize.py
+# Single env (default from config)
+python scripts/traj_preprocess.py
 
-# Explicit output path
-python scripts/featurize.py --output data/my_cache.pt
+# Multiple envs in one cache
+python scripts/traj_preprocess.py --env water hexane
 ```
 
-The output is a single `.pt` file containing **all trajectory frames from both Water and Hexane solvents** per molecule. Solvent selection, `n_conformers`, and `rep_frame_only` are applied at training time, so one cache file works for all modes.
+Each run produces **two** cache files — one with hydrogens removed, one with hydrogens kept:
+
+```
+data/cache_traj_water+hexane_noH.pt
+data/cache_traj_water+hexane_withH.pt
+```
+
+All trajectory frames are stored per molecule, grouped by environment. `n_conformers`, `env`, and `rep_frame_only` are applied at training time.
 
 ### Step 2 — point the config to the cache
 
@@ -49,13 +56,13 @@ In `config/default.yaml`:
 
 ```yaml
 paths:
-  cache_file: data/cache_cycpeptmpdb_traj_allframes.pt   # path produced by featurize.py
+  cache_file: data/cache_traj_water+hexane_noH.pt   # or _withH.pt
 ```
 
-If `cache_file` is `null` or the file doesn't exist, featurization runs on-the-fly.
+`cache_file` is **required** — training will not start without it.
 
-> **Note**: regenerate the cache only if you change `add_dummy_node` or `one_hot_formal_charge`.
-> `solvent`, `n_conformers`, and `rep_frame_only` do **not** require a new cache.
+> **Note**: regenerate the cache only if you change `one_hot_formal_charge` or add new envs.
+> `n_conformers`, `env`, and `rep_frame_only` do **not** require a new cache.
 
 ---
 
@@ -94,9 +101,9 @@ python scripts/main_train.py --mode standalone # GNN only, no Transformer
 
 ```bash
 python scripts/main_train.py --epochs 100 --learning_rate 5e-4 --batch_size 16
-python scripts/main_train.py --n_conformers 20 --solvent water    # water conformers only
-python scripts/main_train.py --n_conformers 20 --solvent hexane   # hexane conformers only
-python scripts/main_train.py --n_conformers 20 --solvent both     # water + hexane concatenated
+python scripts/main_train.py --n_conformers 20 --env water          # water conformers only
+python scripts/main_train.py --n_conformers 20 --env hexane         # hexane conformers only
+python scripts/main_train.py --n_conformers 20 --env water hexane   # water + hexane (n_conformers per env)
 python scripts/main_train.py --rep_frame_only   # use only the representative MD frame
 python scripts/main_train.py --seed 0
 ```

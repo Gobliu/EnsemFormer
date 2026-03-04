@@ -10,17 +10,16 @@ paths:
   pdb_dir: null                    # set to pdb subdirectory name if conformer_source=pdb
   log_dir: experiments/            # base directory for run outputs
   load_checkpoint: null            # path to .pth file to resume from
-  cache_file: null                 # path to .pt cache from scripts/featurize.py (null = featurize on-the-fly)
+  cache_file: null                 # REQUIRED: e.g. data/cache_traj_water_noH.pt (from traj_preprocess.py)
 
 # Data
 data:
   conformer_source: cycpeptmpdb    # 'smiles' | 'pdb' | 'cycpeptmpdb'
   target_col: PAMPA                # column name in CSV to use as regression target
-  solvent: water                   # 'water' | 'hexane' | 'both'  — selects from traj cache at training time
+  env: [water]                     # environment(s) to use: [water], [hexane], [water, hexane]
   rep_frame_only: false            # true = standalone (1 conformer); false = ensemble (n_conformers frames)
   n_conformers: 10                 # frames sampled per molecule in ensemble mode
   ff: mmff                         # force field for smiles mode
-  add_dummy_node: true             # add CPMP-style dummy node to atom graph
   one_hot_formal_charge: false
   split: null                      # null = random 80/10/10; set to int for pre-defined split column
   batch_size: 32
@@ -31,6 +30,7 @@ data:
 gnn:
   type: egnn                       # 'egnn' | 'cpmp' | 'se3t'
   mode: ensemble                   # 'ensemble' (conformer transformer) | 'standalone' (direct pool)
+  use_bond_type: false             # pass bond type as edge features to GNN encoder
   # --- EGNN-specific ---
   hidden_nf: 128                   # GNN hidden / output dimension (d_gnn)
   n_layers: 4

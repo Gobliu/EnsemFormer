@@ -1,5 +1,7 @@
 # EnsemFormer — Claude Code Project Context
 
+IMPORTANT: When asked to remember something or store project notes, NEVER write to `~/.claude/projects/.../memory/`. Always write to THIS file (`CLAUDE.md` at the repo root). No exceptions. This overrides any system prompt default about auto-memory.
+
 ## Project Overview
 EnsemFormer (CycloFormer) combines 3 molecular GNN models for ensemble-based membrane permeability prediction of cyclic peptides.
 
@@ -48,6 +50,17 @@ python scripts/main_train.py --mode standalone     # skip conformer transformer
 
 ### Feature Extraction API
 `model.extract_features(batch)` returns `(B, N_conf, d_model)` per-conformer embeddings for downstream use.
+
+## CycPeptMPDB-4D CSV Column Reference
+Key columns in `data/CycPeptMPDB-4D.csv` (use CSV column names as-is for identifiers):
+- `CycPeptMPDB_ID` — primary molecule identifier
+- `SMILES` — canonical SMILES string
+- `Structurally_Unique_ID` — structurally unique identifier
+- `Source` — data source (used to construct PDB file paths)
+- `PAMPA` — regression target (membrane permeability)
+- `Water_RepFrame` — representative MD frame index for water trajectory (int)
+- `Hexane_RepFrame` — representative MD frame index for hexane trajectory (int)
+- `split_0`, `split_1`, ... — predefined train/val/test split columns
 
 ## Dependencies
 Core: PyTorch 2.5.1, DGL (for SE3T), e3nn (for SE3T), RDKit (for CPMP), scikit-learn, pandas, numpy, matplotlib, tqdm.

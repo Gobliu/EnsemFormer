@@ -13,17 +13,16 @@ paths:
   traj_dir: data/
   log_dir: experiments/
   load_checkpoint: null
-  cache_file: null
+  cache_file: null                 # REQUIRED: e.g. data/cache_traj_water_noH.pt (from traj_preprocess.py)
 
 # Data
 data:
   conformer_source: pdb
   target_col: PAMPA
-  solvent: water
+  env: [water]
   rep_frame_only: false
   n_conformers: 5
   ff: mmff
-  add_dummy_node: true
   one_hot_formal_charge: false
   split: null
   batch_size: 4
@@ -34,6 +33,7 @@ data:
 gnn:
   type: egnn
   mode: ensemble
+  use_bond_type: false
   # --- EGNN-specific ---
   hidden_nf: 128
   n_layers: 4

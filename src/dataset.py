@@ -4,8 +4,7 @@ Provides:
 - ``ConformerEnsembleMolecule``: holds N conformer feature tuples + label
 - ``ConformerEnsembleDataset``: PyTorch Dataset wrapping the above
 - ``conformer_collate_fn``: pads atoms and conformers and builds batch dicts
-- ``featurize_molecules``: standalone featurization function (used by scripts/featurize.py)
-- ``ConformerEnsembleDataModule``: full DataModule with featurization and splitting
+- ``ConformerEnsembleDataModule``: loads a preprocessed .pt cache and splits data
 """
 
 import logging
@@ -17,7 +16,6 @@ import torch
 from torch.utils.data import Dataset
 
 from src.data_module import DataModule
-from src.featurization import load_ensemble_from_pdb
 from src.utils import get_split_sizes
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -32,11 +30,15 @@ class ConformerEnsembleMolecule:
 
     Parameters
     ----------
-    conformers : list of (node_features, adj_matrix, dist_matrix, coords) tuples
+    conformers : list of (node_features, adj_matrix, dist_matrix, coords[, bond_type_matrix]) tuples
     label : float
         Regression target.
-    index : int
-        Dataset index.
+    CycPeptMPDB_ID : str
+        Unique molecule identifier from CycPeptMPDB.
+    SMILES : str or None
+        SMILES string (if available in the source CSV).
+    Structurally_Unique_ID : str or None
+        Structurally unique identifier (if available in the source CSV).
     rep_frame_idx : int or None
         0-based representative frame index.
     """
@@ -45,12 +47,16 @@ class ConformerEnsembleMolecule:
         self,
         conformers: list,
         label: float,
-        index: int,
+        CycPeptMPDB_ID: str,
+        SMILES: str | None = None,
+        Structurally_Unique_ID: str | None = None,
         rep_frame_idx: int | None = None,
     ):
         self.conformers = conformers
         self.y = float(label)
-        self.index = index
+        self.CycPeptMPDB_ID = CycPeptMPDB_ID
+        self.SMILES = SMILES
+        self.Structurally_Unique_ID = Structurally_Unique_ID
         self.rep_frame_idx = rep_frame_idx
 
     @property
@@ -95,6 +101,7 @@ def conformer_collate_fn(
         'atom_mask'      : BoolTensor  (B, N_atoms_max) — True for real atoms
         'conformer_mask' : BoolTensor  (B, N_conf_max) — True for real conformers
         'target'         : FloatTensor (B, 1)
+        'bond_type'      : LongTensor  (B, N_conf_max, N_atoms_max, N_atoms_max)  — if available
     """
     B = len(batch)
     N_conf_max = max(mol.n_conformers for mol in batch)
@@ -104,6 +111,7 @@ def conformer_collate_fn(
         for conf in mol.conformers
     )
     F = batch[0].conformers[0][0].shape[1]
+    has_bond_type = len(batch[0].conformers[0]) >= 5
 
     node_feat = np.zeros((B, N_conf_max, N_atoms_max, F), dtype=np.float32)
     adj = np.zeros((B, N_conf_max, N_atoms_max, N_atoms_max), dtype=np.float32)
@@ -112,20 +120,25 @@ def conformer_collate_fn(
     conformer_mask = np.zeros((B, N_conf_max), dtype=bool)
     atom_mask = np.zeros((B, N_atoms_max), dtype=bool)
     targets = np.zeros((B, 1), dtype=np.float32)
+    if has_bond_type:
+        bond_type = np.zeros((B, N_conf_max, N_atoms_max, N_atoms_max), dtype=np.int64)
 
     for i, mol in enumerate(batch):
         targets[i, 0] = mol.y
         n_atoms = mol.conformers[0][0].shape[0]
         atom_mask[i, :n_atoms] = True
-        for j, (nf, a, d, pos) in enumerate(mol.conformers):
+        for j, conf in enumerate(mol.conformers):
+            nf, a, d, pos = conf[0], conf[1], conf[2], conf[3]
             n_a = nf.shape[0]
             node_feat[i, j, :n_a, :] = nf
             adj[i, j, :n_a, :n_a] = a
             dist[i, j, :n_a, :n_a] = d
             coords[i, j, :n_a, :] = pos
+            if has_bond_type:
+                bond_type[i, j, :n_a, :n_a] = conf[4]
             conformer_mask[i, j] = True
 
-    return {
+    result = {
         "node_feat": torch.from_numpy(node_feat),
         "adj": torch.from_numpy(adj),
         "dist": torch.from_numpy(dist),
@@ -134,70 +147,9 @@ def conformer_collate_fn(
         "conformer_mask": torch.from_numpy(conformer_mask),
         "target": torch.from_numpy(targets),
     }
-
-
-# ---------------------------------------------------------------------------
-# Standalone featurization (also used by scripts/featurize.py)
-# ---------------------------------------------------------------------------
-
-_SOLVENT_MAP = {
-    "water":  ("Water",  "H2O_Traj"),
-    "hexane": ("Hexane", "Hexane_Traj"),
-}
-
-
-def featurize_molecules(
-    data_dir,
-    csv_path: str,
-    target_col: str,
-    traj_dir,
-    solvent: str,
-    add_dummy_node: bool,
-    one_hot_formal_charge: bool,
-) -> tuple[list[ConformerEnsembleMolecule], int]:
-    """Featurize all molecules from trajectory PDB files.
-
-    The CSV must have columns ``Source`` and ``CycPeptMPDB_ID``. PDB files are
-    read from ``<traj_dir>/{Water|Hexane}/Trajectories/{Source}_{ID}_{suffix}.pdb``,
-    matching the CycPeptMPDB_4D dataset layout.
-
-    Returns
-    -------
-    (molecules, d_atom)
-    """
-    data_dir = pathlib.Path(data_dir)
-    csv_file = data_dir / csv_path
-    df = pd.read_csv(csv_file)
-
-    if target_col not in df.columns:
-        raise ValueError(
-            f"Target column '{target_col}' not found in CSV. Columns: {list(df.columns)}"
-        )
-    labels = df[target_col].values.astype(np.float32)
-
-    subdir, suffix = _SOLVENT_MAP[solvent.lower()]
-    traj_base = pathlib.Path(traj_dir) / subdir / "Trajectories"
-    logging.info(f"Featurizing {len(df)} molecules from {csv_file} ...")
-    molecules: list[ConformerEnsembleMolecule] = []
-
-    for idx, (row, label) in enumerate(zip(df.itertuples(), labels)):
-        pdb_path = str(traj_base / f"{row.Source}_{row.CycPeptMPDB_ID}_{suffix}.pdb")
-        confs = load_ensemble_from_pdb(
-            [pdb_path],
-            add_dummy_node=add_dummy_node,
-            one_hot_formal_charge=one_hot_formal_charge,
-        )
-        if not confs:
-            logging.warning(f"Skipping molecule {idx} ({row.Source}_{row.CycPeptMPDB_ID}): no valid PDB conformers.")
-            continue
-        molecules.append(ConformerEnsembleMolecule(confs, label, idx))
-
-    if not molecules:
-        raise RuntimeError("No molecules were successfully featurized.")
-
-    d_atom = molecules[0].conformers[0][0].shape[1]
-    logging.info(f"Featurized {len(molecules)} molecules. d_atom={d_atom}")
-    return molecules, d_atom
+    if has_bond_type:
+        result["bond_type"] = torch.from_numpy(bond_type)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -205,65 +157,69 @@ def featurize_molecules(
 # ---------------------------------------------------------------------------
 
 class ConformerEnsembleDataModule(DataModule):
-    """DataModule that loads, featurizes, and splits a cyclic-peptide dataset.
+    """DataModule that loads a preprocessed .pt cache and splits data.
+
+    The cache file must be produced by ``scripts/traj_preprocess.py`` before
+    training. This DataModule does **not** perform featurization.
 
     Parameters
     ----------
     data_dir : pathlib.Path or str
     csv_path : str
-        CSV filename relative to data_dir. Must have ``Source`` and
-        ``CycPeptMPDB_ID`` columns.
-    target_col : str
-        Column name to use as regression target.
-    traj_dir : pathlib.Path or str
-        Root of the CycPeptMPDB_4D dataset. PDB files are read from
-        ``<traj_dir>/{Water|Hexane}/Trajectories/``.
-    solvent : str
-        ``'water'`` or ``'hexane'``.
+        CSV filename relative to data_dir.
+    cache_file : str
+        Path to a .pt file produced by ``scripts/traj_preprocess.py``.
+    env : list[str] or str or None
+        Environment(s) to use from the cache (e.g. ``["water"]`` or
+        ``["water", "hexane"]``).  If None, all envs in the cache are used.
     n_conformers : int or None
-        Maximum number of conformers to use per molecule.
+        Maximum number of conformers to use **per env** per molecule.
     rep_frame_only : bool
         If True, use only the representative frame per molecule.
     split : int or None
-    add_dummy_node : bool
-    one_hot_formal_charge : bool
     batch_size : int
     num_workers : int
     seed : int
-    cache_file : str or None
-        Path to a .pt file produced by ``scripts/featurize.py``. If the file
-        exists, featurization is skipped and molecules are loaded from cache.
     """
 
     def __init__(
         self,
         data_dir,
         csv_path: str = "CycPeptMPDB-4D.csv",
-        target_col: str = "PAMPA",
-        traj_dir=None,
-        solvent: str = "water",
+        cache_file: str = None,
+        env: list[str] | str | None = None,
         n_conformers: int | None = None,
         rep_frame_only: bool = False,
         split: int | None = 0,
-        add_dummy_node: bool = True,
-        one_hot_formal_charge: bool = False,
         batch_size: int = 32,
         num_workers: int = 4,
         seed: int = 42,
-        cache_file: str | None = None,
     ):
+        if cache_file is None:
+            raise ValueError(
+                "cache_file is required. Run `python scripts/traj_preprocess.py` first "
+                "to produce a .pt cache, then set paths.cache_file in your config."
+            )
+        cache_path = pathlib.Path(cache_file)
+        if not cache_path.exists():
+            raise FileNotFoundError(
+                f"Cache file not found: {cache_path}\n"
+                "Run `python scripts/traj_preprocess.py` first."
+            )
+
         self._data_dir = pathlib.Path(data_dir)
         self._csv_path = csv_path
-        self._target_col = target_col
-        self._traj_dir = pathlib.Path(traj_dir) if traj_dir else self._data_dir
-        self._solvent = solvent
+        self._cache_file = cache_path
+        if env is None:
+            self._envs = None  # use all envs in cache
+        elif isinstance(env, str):
+            self._envs = [env]
+        else:
+            self._envs = list(env)
         self._n_conformers = n_conformers
         self._rep_frame_only = rep_frame_only
         self._split = split
-        self._add_dummy_node = add_dummy_node
-        self._one_hot_formal_charge = one_hot_formal_charge
         self._seed = seed
-        self._cache_file = pathlib.Path(cache_file) if cache_file else None
 
         self._d_atom: int | None = None
 
@@ -282,29 +238,36 @@ class ConformerEnsembleDataModule(DataModule):
         csv_file = self._data_dir / self._csv_path
         df = pd.read_csv(csv_file)
 
-        if self._cache_file is not None and self._cache_file.exists():
-            logging.info(f"Loading featurized molecules from cache: {self._cache_file}")
-            data = torch.load(self._cache_file, weights_only=False)
-            molecules = data["molecules"]
-            self._d_atom = data["d_atom"]
-        else:
-            molecules, self._d_atom = featurize_molecules(
-                data_dir=self._data_dir,
-                csv_path=self._csv_path,
-                target_col=self._target_col,
-                traj_dir=self._traj_dir,
-                solvent=self._solvent,
-                add_dummy_node=self._add_dummy_node,
-                one_hot_formal_charge=self._one_hot_formal_charge,
-            )
+        logging.info(f"Loading preprocessed molecules from cache: {self._cache_file}")
+        data = torch.load(self._cache_file, weights_only=False)
+        raw_molecules = data["molecules"]
+        self._d_atom = data["d_atom"]
+        cache_envs = data["envs"]
+        selected_envs = self._envs if self._envs is not None else cache_envs
 
-        molecules = self._subset_conformers(molecules)
+        # Convert raw dicts from cache into ConformerEnsembleMolecule objects
+        molecules = []
+        for m in raw_molecules:
+            confs = self._select_env_conformers(m["envs"], selected_envs)
+            if not confs:
+                continue
+            molecules.append(
+                ConformerEnsembleMolecule(
+                    conformers=confs,
+                    label=m["label"],
+                    CycPeptMPDB_ID=m["CycPeptMPDB_ID"],
+                    SMILES=m.get("SMILES"),
+                    Structurally_Unique_ID=m.get("Structurally_Unique_ID"),
+                    rep_frame_idx=m.get("rep_frame_idx"),
+                )
+            )
 
         split_col = f"split_{self._split}" if self._split is not None else None
         if split_col is not None and split_col in df.columns:
+            split_map = dict(zip(df["CycPeptMPDB_ID"].astype(str), df[split_col]))
             train_mols, val_mols, test_mols = [], [], []
             for mol in molecules:
-                assignment = df.iloc[mol.index][split_col]
+                assignment = split_map.get(mol.CycPeptMPDB_ID, "train")
                 if assignment == "train":
                     train_mols.append(mol)
                 elif assignment == "val":
@@ -330,23 +293,26 @@ class ConformerEnsembleDataModule(DataModule):
             f"val: {len(self.ds_val)}, test: {len(self.ds_test)}"
         )
 
-    def _subset_conformers(self, molecules: list) -> list:
-        """Apply rep_frame_only and n_conformers subsetting."""
-        out = []
-        for mol in molecules:
-            confs = mol.conformers
-            rep_idx = mol.rep_frame_idx
+    def _select_env_conformers(
+        self, env_dict: dict[str, list], envs_to_use: list[str],
+    ) -> list:
+        """Select and subsample conformers from requested envs.
 
+        ``n_conformers`` is applied **per env** so each environment
+        contributes equally to the conformer ensemble.
+        """
+        confs: list = []
+        for env in envs_to_use:
+            env_confs = env_dict.get(env, [])
+            if not env_confs:
+                continue
             if self._rep_frame_only:
-                idx = rep_idx if rep_idx is not None else 0
-                idx = min(idx, len(confs) - 1)
-                confs = [confs[idx]]
-            elif self._n_conformers is not None and len(confs) > self._n_conformers:
-                chosen = np.linspace(0, len(confs) - 1, self._n_conformers, dtype=int)
-                confs = [confs[i] for i in chosen]
-
-            out.append(ConformerEnsembleMolecule(confs, mol.y, mol.index, rep_idx))
-        return out
+                env_confs = [env_confs[0]]
+            elif self._n_conformers is not None and len(env_confs) > self._n_conformers:
+                chosen = np.linspace(0, len(env_confs) - 1, self._n_conformers, dtype=int)
+                env_confs = [env_confs[i] for i in chosen]
+            confs.extend(env_confs)
+        return confs
 
     @property
     def d_atom(self) -> int:
