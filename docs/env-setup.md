@@ -38,7 +38,9 @@ python -c "
 import warnings; warnings.filterwarnings('ignore')
 import torch
 print('PyTorch:', torch.__version__)
-print('CUDA:', torch.cuda.is_available(), torch.cuda.get_device_name(0))
+print('CUDA available:', torch.cuda.is_available())
+if torch.cuda.is_available():
+    print('GPU:', torch.cuda.get_device_name(0))
 import dgl; print('DGL:', dgl.__version__)
 import e3nn; print('e3nn:', e3nn.__version__)
 from rdkit import Chem; print('RDKit OK')
@@ -47,10 +49,11 @@ print('All OK')
 "
 ```
 
-Expected output:
+Expected output on a GPU machine:
 ```
 PyTorch: 2.10.0+cu128
-CUDA: True  NVIDIA GeForce RTX 5090
+CUDA available: True
+GPU: NVIDIA GeForce RTX 5090
 DGL: 2.1.0
 e3nn: 0.6.0
 RDKit OK
@@ -63,10 +66,10 @@ All OK
 cd /path/to/EnsemFormer
 python -c "
 import sys; sys.path.insert(0, '.')
-from src.networks.egnn_encoder import EGNNEncoder
-from src.networks.cpmp_encoder import CPMPEncoder
-from src.networks.se3t_encoder import SE3TEncoder
-print('All 3 encoders imported OK')
+from src.networks.egnn_backbone import EGNNBackbone
+from src.networks.cpmp_backbone import CPMPBackbone
+from src.networks.se3t_backbone import SE3TBackbone
+print('All 3 backbones imported OK')
 "
 ```
 

@@ -76,7 +76,6 @@ def get_bond_type_matrix(mol) -> np.ndarray:
 
 def featurize_mol(
     mol,
-    one_hot_formal_charge: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Featurize a single RDKit Mol object.
 
@@ -85,25 +84,24 @@ def featurize_mol(
     Parameters
     ----------
     mol : rdchem.Mol
-    one_hot_formal_charge : bool
 
     Returns
     -------
-    node_features    : np.ndarray  (N_atoms, F)
-    adj_matrix       : np.ndarray  (N_atoms, N_atoms)
+    node_features    : np.ndarray  (N_atoms, 25)
+    adj_matrix       : np.ndarray  (N_atoms, N_atoms), dtype bool
     dist_matrix      : np.ndarray  (N_atoms, N_atoms)
     pos_matrix       : np.ndarray  (N_atoms, 3)
     bond_type_matrix : np.ndarray  (N_atoms, N_atoms), dtype int8
     """
     node_features = np.array(
-        [get_atom_features(atom, one_hot_formal_charge) for atom in mol.GetAtoms()]
+        [get_atom_features(atom) for atom in mol.GetAtoms()]
     )
 
-    adj_matrix = np.eye(mol.GetNumAtoms())
+    adj_matrix = np.eye(mol.GetNumAtoms(), dtype=np.bool_)
     for bond in mol.GetBonds():
         i = bond.GetBeginAtom().GetIdx()
         j = bond.GetEndAtom().GetIdx()
-        adj_matrix[i, j] = adj_matrix[j, i] = 1
+        adj_matrix[i, j] = adj_matrix[j, i] = True
 
     bond_type_matrix = get_bond_type_matrix(mol)
 

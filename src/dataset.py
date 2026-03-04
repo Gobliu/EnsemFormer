@@ -1,7 +1,7 @@
 """Multi-conformer dataset for EnsemFormer.
 
 Provides:
-- ``ConformerEnsembleMolecule``: holds N conformer feature tuples + label
+- ``ConformerEnsembleMolecule``: holds topology arrays once + N (dist, coords) conformer tuples + label
 - ``ConformerEnsembleDataset``: PyTorch Dataset wrapping the above
 - ``conformer_collate_fn``: pads atoms and conformers and builds batch dicts
 - ``ConformerEnsembleDataModule``: loads a preprocessed .pt cache and splits data
@@ -28,36 +28,51 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 class ConformerEnsembleMolecule:
     """A single molecule represented as an ensemble of conformers.
 
+    Topology arrays (nf, adj, bond_types) are stored once at molecule level
+    since they are identical across all conformer frames. Per-frame data is
+    stored as a list of (dist, coords) 2-tuples.
+
     Parameters
     ----------
-    conformers : list of (node_features, adj_matrix, dist_matrix, coords[, bond_type_matrix]) tuples
+    nf : np.ndarray (N_atoms, F)
+        Node features — topology-invariant.
+    adj : np.ndarray (N_atoms, N_atoms)
+        Adjacency matrix — topology-invariant.
+    bond_types : np.ndarray (N_atoms, N_atoms)
+        Bond type matrix — topology-invariant.
+    conformers : list of (dist, coords) tuples
+        Per-conformer data: dist (N_atoms, N_atoms), coords (N_atoms, 3).
     label : float
         Regression target.
     CycPeptMPDB_ID : str
         Unique molecule identifier from CycPeptMPDB.
     SMILES : str or None
-        SMILES string (if available in the source CSV).
     Structurally_Unique_ID : str or None
-        Structurally unique identifier (if available in the source CSV).
-    rep_frame_idx : int or None
-        0-based representative frame index.
+    rep_frame_idxs : dict[str, int] or None
+        Per-env representative frame indices, e.g. {"water": 42, "hexane": 17}.
     """
 
     def __init__(
         self,
+        nf: np.ndarray,
+        adj: np.ndarray,
+        bond_types: np.ndarray,
         conformers: list,
         label: float,
         CycPeptMPDB_ID: str,
         SMILES: str | None = None,
         Structurally_Unique_ID: str | None = None,
-        rep_frame_idx: int | None = None,
+        rep_frame_idxs: dict | None = None,
     ):
+        self.nf = nf
+        self.adj = adj
+        self.bond_types = bond_types
         self.conformers = conformers
         self.y = float(label)
         self.CycPeptMPDB_ID = CycPeptMPDB_ID
         self.SMILES = SMILES
         self.Structurally_Unique_ID = Structurally_Unique_ID
-        self.rep_frame_idx = rep_frame_idx
+        self.rep_frame_idxs = rep_frame_idxs
 
     @property
     def n_conformers(self) -> int:
@@ -105,51 +120,54 @@ def conformer_collate_fn(
     """
     B = len(batch)
     N_conf_max = max(mol.n_conformers for mol in batch)
-    N_atoms_max = max(
-        conf[0].shape[0]
-        for mol in batch
-        for conf in mol.conformers
-    )
-    F = batch[0].conformers[0][0].shape[1]
-    has_bond_type = len(batch[0].conformers[0]) >= 5
+    N_atoms_max = max(mol.nf.shape[0] for mol in batch)
+    F = batch[0].nf.shape[1]
 
-    node_feat = np.zeros((B, N_conf_max, N_atoms_max, F), dtype=np.float32)
-    adj = np.zeros((B, N_conf_max, N_atoms_max, N_atoms_max), dtype=np.float32)
-    dist = np.full((B, N_conf_max, N_atoms_max, N_atoms_max), 1e6, dtype=np.float32)
-    coords = np.zeros((B, N_conf_max, N_atoms_max, 3), dtype=np.float32)
+    # Topology arrays: (B, N_atoms_max, ...) — broadcast to conformer dim after filling
+    node_feat_2d = np.zeros((B, N_atoms_max, F), dtype=np.float32)
+    adj_2d       = np.zeros((B, N_atoms_max, N_atoms_max), dtype=np.float32)
+    bond_type_2d = np.zeros((B, N_atoms_max, N_atoms_max), dtype=np.int64)
+
+    # Per-conformer arrays
+    dist          = np.full((B, N_conf_max, N_atoms_max, N_atoms_max), 1e6, dtype=np.float32)
+    coords        = np.zeros((B, N_conf_max, N_atoms_max, 3), dtype=np.float32)
     conformer_mask = np.zeros((B, N_conf_max), dtype=bool)
-    atom_mask = np.zeros((B, N_atoms_max), dtype=bool)
-    targets = np.zeros((B, 1), dtype=np.float32)
-    if has_bond_type:
-        bond_type = np.zeros((B, N_conf_max, N_atoms_max, N_atoms_max), dtype=np.int64)
+    atom_mask     = np.zeros((B, N_atoms_max), dtype=bool)
+    targets       = np.zeros((B, 1), dtype=np.float32)
 
     for i, mol in enumerate(batch):
         targets[i, 0] = mol.y
-        n_atoms = mol.conformers[0][0].shape[0]
-        atom_mask[i, :n_atoms] = True
-        for j, conf in enumerate(mol.conformers):
-            nf, a, d, pos = conf[0], conf[1], conf[2], conf[3]
-            n_a = nf.shape[0]
-            node_feat[i, j, :n_a, :] = nf
-            adj[i, j, :n_a, :n_a] = a
-            dist[i, j, :n_a, :n_a] = d
-            coords[i, j, :n_a, :] = pos
-            if has_bond_type:
-                bond_type[i, j, :n_a, :n_a] = conf[4]
-            conformer_mask[i, j] = True
+        n_a = mol.nf.shape[0]
+        atom_mask[i, :n_a] = True
 
-    result = {
-        "node_feat": torch.from_numpy(node_feat),
-        "adj": torch.from_numpy(adj),
-        "dist": torch.from_numpy(dist),
-        "coords": torch.from_numpy(coords),
-        "atom_mask": torch.from_numpy(atom_mask),
+        # Topology — stored once per molecule
+        node_feat_2d[i, :n_a, :]    = mol.nf
+        adj_2d[i, :n_a, :n_a]       = mol.adj
+        bond_type_2d[i, :n_a, :n_a] = mol.bond_types
+
+        # Per-conformer (dist, coords)
+        for j, (d, pos) in enumerate(mol.conformers):
+            dist[i, j, :n_a, :n_a] = d
+            coords[i, j, :n_a, :]  = pos
+            conformer_mask[i, j]   = True
+
+    # Broadcast topology to conformer dimension.
+    # .contiguous() is required: expand() returns a stride-0 view that breaks
+    # view()/reshape() inside the CPMP encoder.
+    node_feat_t = torch.from_numpy(node_feat_2d).unsqueeze(1).expand(-1, N_conf_max, -1, -1).contiguous()
+    adj_t       = torch.from_numpy(adj_2d).unsqueeze(1).expand(-1, N_conf_max, -1, -1).contiguous()
+    bond_type_t = torch.from_numpy(bond_type_2d).unsqueeze(1).expand(-1, N_conf_max, -1, -1).contiguous()
+
+    return {
+        "node_feat":      node_feat_t,
+        "adj":            adj_t,
+        "dist":           torch.from_numpy(dist),
+        "coords":         torch.from_numpy(coords),
+        "atom_mask":      torch.from_numpy(atom_mask),
         "conformer_mask": torch.from_numpy(conformer_mask),
-        "target": torch.from_numpy(targets),
+        "target":         torch.from_numpy(targets),
+        "bond_type":      bond_type_t,
     }
-    if has_bond_type:
-        result["bond_type"] = torch.from_numpy(bond_type)
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -248,17 +266,21 @@ class ConformerEnsembleDataModule(DataModule):
         # Convert raw dicts from cache into ConformerEnsembleMolecule objects
         molecules = []
         for m in raw_molecules:
-            confs = self._select_env_conformers(m["envs"], selected_envs)
+            rep_frame_idxs = m.get("rep_frame_idxs") or {}
+            confs = self._select_env_conformers(m["envs"], selected_envs, rep_frame_idxs)
             if not confs:
                 continue
             molecules.append(
                 ConformerEnsembleMolecule(
+                    nf=m["nf"],
+                    adj=m["adj"],
+                    bond_types=m["bond_types"],
                     conformers=confs,
                     label=m["label"],
                     CycPeptMPDB_ID=m["CycPeptMPDB_ID"],
                     SMILES=m.get("SMILES"),
                     Structurally_Unique_ID=m.get("Structurally_Unique_ID"),
-                    rep_frame_idx=m.get("rep_frame_idx"),
+                    rep_frame_idxs=rep_frame_idxs if rep_frame_idxs else None,
                 )
             )
 
@@ -294,7 +316,10 @@ class ConformerEnsembleDataModule(DataModule):
         )
 
     def _select_env_conformers(
-        self, env_dict: dict[str, list], envs_to_use: list[str],
+        self,
+        env_dict: dict[str, list],
+        envs_to_use: list[str],
+        rep_frame_idxs: dict[str, int],
     ) -> list:
         """Select and subsample conformers from requested envs.
 
@@ -307,7 +332,17 @@ class ConformerEnsembleDataModule(DataModule):
             if not env_confs:
                 continue
             if self._rep_frame_only:
-                env_confs = [env_confs[0]]
+                if env not in rep_frame_idxs:
+                    raise ValueError(
+                        f"rep_frame_only=True requires rep_frame_idxs['{env}'], but it is missing."
+                    )
+                rep_idx_1b = int(rep_frame_idxs[env])
+                if rep_idx_1b < 1 or rep_idx_1b > len(env_confs):
+                    raise IndexError(
+                        f"Representative frame index out of range for env '{env}': "
+                        f"{rep_idx_1b} (valid 1..{len(env_confs)})."
+                    )
+                env_confs = [env_confs[rep_idx_1b - 1]]
             elif self._n_conformers is not None and len(env_confs) > self._n_conformers:
                 chosen = np.linspace(0, len(env_confs) - 1, self._n_conformers, dtype=int)
                 env_confs = [env_confs[i] for i in chosen]

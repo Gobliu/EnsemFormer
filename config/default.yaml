@@ -16,11 +16,10 @@ paths:
 data:
   conformer_source: cycpeptmpdb    # 'smiles' | 'pdb' | 'cycpeptmpdb'
   target_col: PAMPA                # column name in CSV to use as regression target
-  env: [water]                     # environment(s) to use: [water], [hexane], [water, hexane]
+  env: [water, hexane]                     # environment(s) to use: [water], [hexane], [water, hexane]
   rep_frame_only: false            # true = standalone (1 conformer); false = ensemble (n_conformers frames)
   n_conformers: 10                 # frames sampled per molecule in ensemble mode
   ff: mmff                         # force field for smiles mode
-  one_hot_formal_charge: false
   split: null                      # null = random 80/10/10; set to int for pre-defined split column
   batch_size: 32
   num_workers: 4
@@ -45,6 +44,7 @@ gnn:
   lambda_distance: 0.3
   dropout_cpmp: 0.1
   distance_matrix_kernel: softmax
+  one_hot_formal_charge: true      # CPMP only: expand scalar charge -> 3-dim one-hot at forward time
   # --- SE3T-specific (ignored when type != se3t) ---
   se3t_num_layers: 4               # SE3Transformer attention layers
   num_channels: 32                 # channels per feature type

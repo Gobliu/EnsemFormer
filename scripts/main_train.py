@@ -188,19 +188,17 @@ def main():
         **gnn_kwargs,
     )
 
-    # Move all sub-modules to device
-    modelmodule.gnn_encoder.to(device)
-    modelmodule.conformer_encoder.to(device)
-    modelmodule.head.to(device)
-    modelmodule.cls_token.data = modelmodule.cls_token.data.to(device)
+    modelmodule.model.to(device)
 
     if local_rank == 0:
-        print_parameters_count(modelmodule.gnn_encoder)
+        print_parameters_count(modelmodule.model)
 
     if is_distributed:
         from torch.nn.parallel import DistributedDataParallel
-        modelmodule.gnn_encoder = DistributedDataParallel(
-            modelmodule.gnn_encoder, device_ids=[local_rank], output_device=local_rank
+        modelmodule.model = DistributedDataParallel(
+            modelmodule.model,
+            device_ids=[local_rank] if device.type == "cuda" else None,
+            output_device=local_rank if device.type == "cuda" else None,
         )
 
     # ------------------------------------------------------------------

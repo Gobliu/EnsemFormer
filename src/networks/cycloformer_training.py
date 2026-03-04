@@ -15,20 +15,16 @@ from src.utils import to_device
 class CycloFormerTrainingMixin:
     """Mixin providing training / evaluation / inference methods.
 
-    Expects the host class to have: ``gnn_encoder``, ``conformer_encoder``,
-    ``head``, ``cls_token``, ``proj``, ``loss_fn``, ``device``, ``local_rank``,
-    ``forward()``, and ``_get_tqdm()``.
+    Expects the host class to have: ``model`` (a CycloFormerCore or DDP-wrapped
+    CycloFormerCore), ``loss_fn``, ``device``, ``local_rank``, ``forward()``,
+    and ``_get_tqdm()``.
     """
 
     def configure_optimizers(self, config: dict):
         """Instantiate AdamW optimizer and cosine-annealing LR scheduler."""
         tc = config["training"]
         self.optimizer = torch.optim.AdamW(
-            list(self.gnn_encoder.parameters())
-            + list(self.conformer_encoder.parameters())
-            + list(self.head.parameters())
-            + [self.cls_token]
-            + (list(self.proj.parameters()) if not isinstance(self.proj, nn.Identity) else []),
+            self.model.parameters(),
             lr=tc["learning_rate"],
             weight_decay=tc["weight_decay"],
         )
@@ -46,9 +42,7 @@ class CycloFormerTrainingMixin:
         config: dict,
     ) -> torch.Tensor:
         args = types.SimpleNamespace(**config["training"])
-        self.gnn_encoder.train()
-        self.conformer_encoder.train()
-        self.head.train()
+        self.model.train()
 
         loss_acc = torch.zeros((1,), device=self.device)
         for i, batch in self._get_tqdm(
@@ -72,12 +66,7 @@ class CycloFormerTrainingMixin:
             if (i + 1) % args.accumulate_grad_batches == 0 or (i + 1) == len(train_dataloader):
                 if args.gradient_clip is not None:
                     grad_scaler.unscale_(self.optimizer)
-                    nn.utils.clip_grad_norm_(
-                        list(self.gnn_encoder.parameters())
-                        + list(self.conformer_encoder.parameters())
-                        + list(self.head.parameters()),
-                        args.gradient_clip,
-                    )
+                    nn.utils.clip_grad_norm_(self.model.parameters(), args.gradient_clip)
                 grad_scaler.step(self.optimizer)
                 grad_scaler.update()
                 self.optimizer.zero_grad(set_to_none=True)
@@ -92,9 +81,7 @@ class CycloFormerTrainingMixin:
         config: dict,
     ) -> torch.Tensor:
         args = types.SimpleNamespace(**config["training"])
-        self.gnn_encoder.eval()
-        self.conformer_encoder.eval()
-        self.head.eval()
+        self.model.eval()
 
         loss_acc = torch.zeros((1,), device=self.device)
         for _, batch in self._get_tqdm(
@@ -123,8 +110,6 @@ class CycloFormerTrainingMixin:
     @torch.inference_mode()
     def predict(self, batch: dict) -> torch.Tensor:
         """Run inference and return raw predictions (B, 1)."""
-        self.gnn_encoder.eval()
-        self.conformer_encoder.eval()
-        self.head.eval()
+        self.model.eval()
         batch = to_device(batch, self.device)
         return self.forward(batch)

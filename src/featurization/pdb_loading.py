@@ -11,7 +11,6 @@ from src.featurization.atom_features import featurize_mol
 def _featurize_pdb_file(
     pdb_path: str,
     remove_h: bool = True,
-    one_hot_formal_charge: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Load and featurize a single PDB file.
 
@@ -24,19 +23,27 @@ def _featurize_pdb_file(
     if mol is None:
         raise ValueError(f"RDKit failed to parse PDB file: {pdb_path}")
 
-    return featurize_mol(mol, one_hot_formal_charge)
+    return featurize_mol(mol)
 
 
 def load_frames_from_traj_pdb(
     traj_path: str,
     frame_indices: list[int] | None = None,
     remove_h: bool = True,
-    one_hot_formal_charge: bool = False,
-) -> list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+) -> tuple[
+    np.ndarray | None,
+    np.ndarray | None,
+    np.ndarray | None,
+    list[tuple[np.ndarray, np.ndarray]],
+]:
     """Load selected frames from a multi-MODEL trajectory PDB as a conformer ensemble.
 
     Frame indices are 1-based (matching the renumbered MODEL numbers in the file).
     If frame_indices is None, all frames are loaded.
+
+    Topology arrays (nf, adj, bond_types) are identical across frames and are
+    returned once. Per-frame data is returned as a list of (dist, coords) 2-tuples.
+    Consistency of all three topology arrays is verified across frames.
 
     Parameters
     ----------
@@ -46,19 +53,20 @@ def load_frames_from_traj_pdb(
         1-based frame indices to extract. None means all frames.
     remove_h : bool
         Strip hydrogen atoms before featurization.
-    one_hot_formal_charge : bool
-
     Returns
     -------
-    list of (node_features, adj_matrix, dist_matrix, pos_matrix, bond_type_matrix) tuples.
-    Empty list if the file cannot be read or no frames succeed.
+    (nf, adj, bond_types, frames) where:
+        nf         : (N_atoms, F) node features — None if no frames loaded
+        adj        : (N_atoms, N_atoms) adjacency matrix — None if no frames loaded
+        bond_types : (N_atoms, N_atoms) bond type matrix — None if no frames loaded
+        frames     : list of (dist, coords) 2-tuples — empty list if no frames loaded
     """
     try:
         with open(traj_path, "r") as f:
             raw = f.read()
     except OSError as e:
         logging.error(f"[TrajPDB] Cannot open {traj_path}: {e}")
-        return []
+        return None, None, None, []
 
     # Split into per-frame blocks using MODEL/ENDMDL boundaries
     frame_blocks: dict[int, str] = {}
@@ -80,11 +88,12 @@ def load_frames_from_traj_pdb(
 
     if not frame_blocks:
         logging.error(f"[TrajPDB] No MODEL blocks found in {traj_path}")
-        return []
+        return None, None, None, []
 
     target_indices = frame_indices if frame_indices is not None else sorted(frame_blocks.keys())
 
-    results = []
+    frames: list[tuple[np.ndarray, np.ndarray]] = []
+    ref_nf = None
     ref_adj = None
     ref_bt = None
 
@@ -95,9 +104,10 @@ def load_frames_from_traj_pdb(
         mol = Chem.MolFromPDBBlock(frame_blocks[idx], removeHs=remove_h, sanitize=True)
         if mol is None:
             raise ValueError(f"RDKit failed to parse frame {idx} of {traj_path}")
-        nf, adj, dist, pos, bt = featurize_mol(mol, one_hot_formal_charge)
+        nf, adj, dist, pos, bt = featurize_mol(mol)
 
         if ref_adj is None:
+            ref_nf = nf
             ref_adj = adj
             ref_bt = bt
         else:
@@ -111,41 +121,55 @@ def load_frames_from_traj_pdb(
                     f"Bond type matrix inconsistency at frame {idx} of {traj_path}: "
                     "topology must be invariant across trajectory frames."
                 )
+            if not np.array_equal(nf, ref_nf):
+                raise ValueError(
+                    f"Node feature inconsistency at frame {idx} of {traj_path}: "
+                    "topology must be invariant across trajectory frames."
+                )
 
-        results.append((nf, adj, dist, pos, bt))
+        frames.append((dist, pos))
 
-    return results
+    if not frames:
+        return None, None, None, []
+
+    return ref_nf, ref_adj, ref_bt, frames
 
 
 def load_ensemble_from_pdb(
     pdb_paths: list[str],
     remove_h: bool = True,
-    one_hot_formal_charge: bool = False,
-) -> list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+) -> tuple[
+    np.ndarray | None,
+    np.ndarray | None,
+    np.ndarray | None,
+    list[tuple[np.ndarray, np.ndarray]],
+]:
     """Load multiple PDB files as a conformer ensemble.
 
-    Each PDB file is treated as one conformer. Node features and adjacency
-    are taken from the first successfully parsed conformer and reused for all.
+    Each PDB file is treated as one conformer. Topology arrays (nf, adj,
+    bond_types) are returned once; per-conformer data is a list of (dist,
+    coords) 2-tuples. Consistency of topology is verified across files.
 
     Parameters
     ----------
     pdb_paths : list[str]
         One path per conformer.
     remove_h : bool
-    one_hot_formal_charge : bool
 
     Returns
     -------
-    list of (node_features, adj_matrix, dist_matrix, pos_matrix, bond_type_matrix) tuples.
+    (nf, adj, bond_types, frames) — see load_frames_from_traj_pdb for details.
     """
-    results = []
+    frames: list[tuple[np.ndarray, np.ndarray]] = []
+    ref_nf = None
     ref_adj = None
     ref_bt = None
 
     for path in pdb_paths:
-        nf, adj, dist, pos, bt = _featurize_pdb_file(path, remove_h, one_hot_formal_charge)
+        nf, adj, dist, pos, bt = _featurize_pdb_file(path, remove_h)
 
         if ref_adj is None:
+            ref_nf = nf
             ref_adj = adj
             ref_bt = bt
         else:
@@ -159,7 +183,15 @@ def load_ensemble_from_pdb(
                     f"Bond type matrix inconsistency in {path}: "
                     "topology must be invariant across conformer PDB files."
                 )
+            if not np.array_equal(nf, ref_nf):
+                raise ValueError(
+                    f"Node feature inconsistency in {path}: "
+                    "topology must be invariant across conformer PDB files."
+                )
 
-        results.append((nf, adj, dist, pos, bt))
+        frames.append((dist, pos))
 
-    return results
+    if not frames:
+        return None, None, None, []
+
+    return ref_nf, ref_adj, ref_bt, frames

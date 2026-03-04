@@ -48,26 +48,51 @@ python scripts/traj_preprocess.py --env water hexane
 python scripts/traj_preprocess.py --config config/dev.yaml
 ```
 
-### What It Does
+### Pipeline Flow
 
-For each molecule in the CSV:
+```
+traj_preprocess.py
+│
+└─ for each hydrogen variant (noH, withH):
+    │
+    ├─ for each env (water / hexane):           ← pipeline.py :: featurize_molecules()
+    │   │
+    │   └─ for each molecule in CSV:
+    │       │
+    │       └─ pdb_loading.py :: load_frames_from_traj_pdb()
+    │           │
+    │           ├─ parse MODEL/ENDMDL blocks from trajectory PDB
+    │           └─ for each frame:
+    │               ├─ RDKit: PDB block → Mol object
+    │               ├─ atom_features.py :: featurize_mol()
+    │               │     builds: nf, adj, dist, coords, bond_types
+    │               └─ consistency check vs. frame 0:
+    │                     nf == ref?  adj == ref?  bond_types == ref?
+    │                     └─ ValueError if any mismatch
+    │
+    ├─ _merge_env_molecules()                   ← traj_preprocess.py
+    │   ├─ align molecules across envs by CycPeptMPDB_ID
+    │   ├─ hoist nf / adj / bond_types to molecule level (topology stored once)
+    │   └─ cross-env consistency check: same checks as above
+    │         └─ ValueError if any mismatch
+    │
+    └─ torch.save() → cache_traj_{envs}_{noH|withH}.pt
+```
 
-1. **Load trajectory PDB** — parse MODEL/ENDMDL blocks to extract all frames
-2. **Parse each frame** — convert PDB block → RDKit Mol (raises `ValueError` if parsing fails)
-3. **Optionally remove hydrogens** — reduces atom count
-4. **Featurize each frame** — compute per-atom features + graph matrices
-5. **Verify topology consistency** — `adj` and `bond_types` are extracted from each frame and verified
-   to be identical across all frames (raises `ValueError` on mismatch). These matrices encode molecular
-   topology, which must be invariant across conformers.
+### Notes
+
+- Hydrogens are stripped (or kept) before featurization based on the `remove_h` flag.
+- `nf`, `adj`, and `bond_types` encode molecular topology — they are invariant across MD frames
+  and stored once per molecule. Only `dist` and `coords` vary per frame.
 
 ### Per-Frame Featurization
 
-Each frame produces a 5-tuple `(node_features, adj, dist, coords, bond_types)`:
+Each frame is featurized into these components (`featurize_mol` in `atom_features.py`):
 
 | Matrix | Shape | Description |
 |--------|-------|-------------|
 | `node_features` | (N, 25) | Atom feature vectors |
-| `adj` | (N, N) | Binary adjacency matrix (with self-loops) |
+| `adj` | (N, N) | Boolean adjacency matrix (True if bonded or self-loop) |
 | `dist` | (N, N) | Pairwise Euclidean distance matrix |
 | `coords` | (N, 3) | 3D atomic coordinates |
 | `bond_types` | (N, N) | Bond type matrix (0=none, 1=single, 2=double, 3=triple, 4=aromatic) |
@@ -93,22 +118,20 @@ Each frame produces a 5-tuple `(node_features, adj, dist, coords, bond_types)`:
 {
     "molecules": [
         {
+            # Topology — identical across all frames, stored once per molecule
+            "nf":         ndarray (N_atoms, 25),      # node features
+            "adj":        ndarray (N_atoms, N_atoms),  # adjacency matrix — bool; True if bonded or self-loop
+            "bond_types": ndarray (N_atoms, N_atoms),  # bond type matrix — int8; 0=none, 1=single, 2=double, 3=triple, 4=aromatic
+            # Per-frame data — only what actually varies across MD frames
             "envs": {
-                "water": [
-                    (nf, adj, dist, coords, bond_types),   # frame 0
-                    (nf, adj, dist, coords, bond_types),   # frame 1
-                    ...                                      # ALL frames stored
-                ],
-                "hexane": [
-                    (nf, adj, dist, coords, bond_types),   # frame 0
-                    ...
-                ],
+                "water":  [(dist, coords), ...],   # ALL frames stored; (dist, coords) per frame
+                "hexane": [(dist, coords), ...],
             },
             "label": -5.1,                       # PAMPA value
             "CycPeptMPDB_ID": "CPMP-0001",       # unique molecule ID
             "SMILES": "CC(=O)...",                # if available in CSV
             "Structurally_Unique_ID": "SU-001",   # if available in CSV
-            "rep_frame_idx": None
+            "rep_frame_idxs": {"water": 42, "hexane": 17}  # from Water_RepFrame / Hexane_RepFrame columns
         },
         ...  # 5,160 molecules
     ],

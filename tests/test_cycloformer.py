@@ -86,13 +86,8 @@ def test_cycloformer_cpmp_gradient_flow():
     loss = torch.nn.functional.mse_loss(pred, target)
     loss.backward()
 
-    # Check that at least one parameter has a gradient
-    has_grad = any(
-        p.grad is not None
-        for p in list(module.gnn_encoder.parameters())
-        + list(module.conformer_encoder.parameters())
-        + list(module.head.parameters())
-    )
+    # Check that at least one model parameter has a gradient
+    has_grad = any(p.grad is not None for p in module.model.parameters())
     assert has_grad, "No gradients found after backward pass"
 
 

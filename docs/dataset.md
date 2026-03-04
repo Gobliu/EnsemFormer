@@ -2,122 +2,86 @@
 
 ## Overview
 
-**Path:** `/home/liuw/GitHub/Data/CycPeptMPDB_4D/`
+Primary raw dataset root:
+- `/home/liuw/GitHub/Data/CycPeptMPDB_4D/`
 
-CycPeptMPDB-4D is a dataset of 5,160 cyclic peptides with MD-derived conformer ensembles and experimental membrane permeability (PAMPA) labels. It spans 5 literature sources (2015–2021).
+CycPeptMPDB-4D contains 5,160 cyclic peptides with MD-derived conformer ensembles and PAMPA labels, spanning 5 sources (`2015_Wang`, `2016_Furukawa`, `2018_Naylor`, `2020_Townsend`, `2021_Kelly`).
 
-## Directory Structure
+## Directory Structure (Raw Dataset Root)
 
 ```
 CycPeptMPDB_4D/
-├── CycPeptMPDB-4D.csv         # metadata + labels for all 5,160 peptides
+├── CycPeptMPDB-4D.csv
 ├── Water/
-│   ├── Structures/            # 5,160 PDB files — representative single-frame structure
-│   ├── Trajectories/          # 5,160 PDB files — multi-frame MD trajectory (100 frames each)
-│   └── Logs/                  # 5,160 GROMACS clustering logs
-└── Hexane/
-    ├── Structures/            # 5,160 PDB files
-    ├── Trajectories/          # 5,160 PDB files
-    └── Logs/                  # 5,160 GROMACS clustering logs
+│   ├── Structures/     # 5,160 PDB files
+│   ├── Trajectories/   # 5,160 trajectory PDB files
+│   └── Logs/           # 5,160 clustering logs
+├── Hexane/
+│   ├── Structures/     # 5,160 PDB files
+│   ├── Trajectories/   # 5,160 trajectory PDB files
+│   └── Logs/           # 5,160 clustering logs
+└── CHCl3/              # 6 trajectories (not used in current training flow)
 ```
 
-> CHCl3 is excluded — only 6 peptides available, insufficient for training.
-
-**Total size:** ~17 GB
+Local copy size in this environment is about `11G`.
 
 ## File Naming Convention
 
 ```
-{YEAR}_{Author}_{ID}_H2O_Str.pdb      # Water structure
-{YEAR}_{Author}_{ID}_H2O_Traj.pdb     # Water trajectory
-{YEAR}_{Author}_{ID}_Hexane_Str.pdb   # Hexane structure
-{YEAR}_{Author}_{ID}_Hexane_Traj.pdb  # Hexane trajectory
-{YEAR}_{Author}_{ID}_H2O.log          # Water clustering log
-{YEAR}_{Author}_{ID}_Hexane.log       # Hexane clustering log
+{YEAR}_{Author}_{ID}_H2O_Str.pdb
+{YEAR}_{Author}_{ID}_H2O_Traj.pdb
+{YEAR}_{Author}_{ID}_Hexane_Str.pdb
+{YEAR}_{Author}_{ID}_Hexane_Traj.pdb
+{YEAR}_{Author}_{ID}_H2O.log
+{YEAR}_{Author}_{ID}_Hexane.log
 ```
 
-The `Source` column in the CSV provides `{YEAR}_{Author}` and `CycPeptMPDB_ID` provides `{ID}`.
+`Source` provides `{YEAR}_{Author}` and `CycPeptMPDB_ID` provides `{ID}`.
 
-## CSV Schema (`CycPeptMPDB-4D.csv`)
+## CSV Variants
 
-| Column | Description |
-|--------|-------------|
-| `CycPeptMPDB_ID` | Unique integer ID |
-| `Source` | Literature source (e.g. `2021_Kelly`) |
-| `Original_Name_in_Source_Literature` | Peptide name as published |
-| `Structurally_Unique_ID` | ID for structurally distinct peptides |
-| `PAMPA` | **Target label** — log-scale membrane permeability (e.g. `-5.1`) |
-| `Monomer_Length` | Total residue count |
-| `Monomer_Length_in_Main_Chain` | Residues in the backbone ring |
-| `Molecule_Shape` | Topology descriptor (e.g. `Lariat`) |
-| `Water_avgRMSD_All` | Mean all-atom RMSD across water MD frames (nm) |
-| `Water_avgRMSD_BackBone` | Mean backbone RMSD in water (nm) |
-| `Desolvation_Free_Energy` | Water-to-hexane transfer free energy (kcal/mol) |
-| `Water_3D_SASA` | Solvent-accessible surface area in water (nm²) |
-| `Water_3D_NPSA` | Non-polar surface area in water (nm²) |
-| `Water_3D_PSA` | Polar surface area in water (nm²) |
-| `Hexane_avgRMSD_All` | Mean all-atom RMSD in hexane (nm) |
-| `Hexane_avgRMSD_BackBone` | Mean backbone RMSD in hexane (nm) |
-| `Hexane_3D_SASA` | SASA in hexane (nm²) |
-| `Hexane_3D_NPSA` | Non-polar SA in hexane (nm²) |
-| `Hexane_3D_PSA` | Polar SA in hexane (nm²) |
-| `Water_RepFrame` | 1-based frame index of the representative conformer in the Water trajectory (derived from log cluster-1 middle) |
-| `Hexane_RepFrame` | 1-based frame index of the representative conformer in the Hexane trajectory |
+There are two CSV variants in common use:
+
+1. Raw CSV at dataset root (`/home/liuw/GitHub/Data/CycPeptMPDB_4D/CycPeptMPDB-4D.csv`):
+- 19 columns (metadata + labels), no representative-frame columns.
+
+2. Prepared CSV used by this repo (`data/CycPeptMPDB-4D.csv`):
+- Includes additional columns like `SMILES`, `Water_RepFrame`, and `Hexane_RepFrame`.
+- `Water_RepFrame` and `Hexane_RepFrame` are 1-based frame indices derived from log cluster-1 middle times.
+
+Representative-frame conversion logic is implemented in `scripts/prepare_dataset.py`:
+
+```python
+frame = round((t_ns - 20.0) / 0.3) + 1
+```
 
 ## Conformer Ensembles
 
-### Trajectory PDBs (ensemble mode)
+- Most trajectory PDBs have 100 MODEL frames (20.0 to 49.7 ns at 0.3 ns spacing).
+- Four Hexane trajectories are shorter: `5840` (19), `5952` (40), `6051` (41), `6352` (62).
 
-Each trajectory PDB contains **100 frames** of MD simulation saved as sequential `MODEL` blocks. Each frame is one conformer.
+Each valid frame is featurized into:
+- `nf` (node features)
+- `adj` (bond adjacency + self-loop)
+- `bond_types`
+- per-frame `(dist, coords)`
 
-**Simulation parameters (verified from file inspection):**
-- Simulation time window: 20–49.7 ns (equilibration period discarded)
-- Frame spacing: 0.3 ns (150,000 MD steps × 2 fs/step)
-- Step numbers in PDB: 10,000,000 → 24,850,000
+Note: graph topology is bond-based, not distance-cutoff-based.
 
-For EnsemFormer, the trajectory PDB is the primary input: load all 100 frames, each becomes one conformer in the `N_conf` dimension.
+## Usage in EnsemFormer (Current Code)
 
-### Representative Conformer (single-conformer mode)
+Current training uses a cache-first workflow:
 
-The `Logs/` files contain GROMACS RMSD clustering output (Gromos method, cutoff 0.1 nm) over the 100 trajectory frames. Each log reports cluster assignments and identifies the **middle structure** — the frame with the lowest average RMSD to all other cluster members, i.e. the most representative conformer.
+1. Run preprocessing once (`scripts/traj_preprocess.py`) to create `.pt` cache files.
+2. Configure `paths.cache_file` in YAML.
+3. `ConformerEnsembleDataModule` loads cached molecules from `.pt` (it does not parse trajectory PDBs during training).
+4. At runtime, it applies `env`, `n_conformers`, and `rep_frame_only`, then collates padded tensors.
 
-**Log format:**
-```
-cl. | #st  rmsd | middle rmsd | cluster members
-  1 |  42  0.094 |     32 .078 |   26  26.6  26.9 ...
-  2 |  16  0.100 |     41 .090 |   26.3  31.1 ...
-```
-- `cl.` — cluster index (sorted by size, largest first)
-- `#st` — number of member frames
-- `middle` — simulation time (ns) of the representative frame
-- `cluster members` — simulation times (ns) of all frames in the cluster
+Important behavior:
+- `rep_frame_only=True` requires representative frame indices in cache.
+- Missing or out-of-range rep-frame indices now raise errors (no silent clamp/fallback).
 
-**Converting log time → frame index (1-based):**
-```python
-def time_to_frame(t_ns: float, n_frames: int = 100) -> int:
-    """Convert GROMACS log time (ns) to 1-based PDB frame index."""
-    return min(max(round((t_ns - 20.0) / 0.3) + 1, 1), n_frames)
-```
+## Splits
 
-**Representative conformer = middle frame of cluster 1** (the largest cluster). This is the frame to use when only a single conformer is needed (standalone mode).
-
-- **Structures/**: pre-extracted single-frame PDB (likely the cluster-1 middle structure)
-- **Trajectories/**: all 100 frames, MODEL blocks renumbered 1–100 — use `Water_RepFrame` / `Hexane_RepFrame` from the CSV to locate the representative frame directly
-
-> **Note:** 4 Hexane trajectories have fewer than 100 frames (incomplete MD runs):
-> `2021_Kelly_5840` (19), `2021_Kelly_5952` (40), `2021_Kelly_6051` (41), `2021_Kelly_6352` (62).
-> Handle these with a fallback (e.g. clamp frame index or skip) in the dataloader.
-
-## Data Split Considerations
-
-- 5,160 peptides total across 5 sources
-- Recommended: split by `Structurally_Unique_ID` (not random) to avoid structural leakage
-- `Source`-based splits can test cross-literature generalization
-
-## Usage in EnsemFormer
-
-The dataset loader should:
-1. Read `CycPeptMPDB-4D.csv` to get IDs and PAMPA labels
-2. For each peptide, parse the Water (and optionally Hexane) trajectory PDB to extract up to N conformer graphs
-3. Build a graph per conformer (nodes = heavy atoms, edges by distance cutoff)
-4. Stack conformers into a batch of shape `(B, N_conf, ...)` for the conformer Transformer
+- If CSV has `split_<k>` columns, those are used.
+- Otherwise, code falls back to seeded random `80/10/10` split.

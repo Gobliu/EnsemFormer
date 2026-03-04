@@ -104,12 +104,15 @@ CycloFormerModule(
     **gnn_kwargs,                   # encoder-specific params
 )
   │
-  ├─ .gnn_encoder      → EGNNEncoder | CPMPEncoder | SE3TEncoder
-  ├─ .conformer_encoder → Transformer over conformer tokens  (ensemble mode)
-  ├─ .head             → 2-layer MLP → scalar
-  └─ .cls_token        → learnable CLS prepended to conformer sequence
+  └─ .model (CycloFormerCore)
+       ├─ .backbone          → EGNNBackbone | CPMPBackbone | SE3TBackbone
+       ├─ .conformer_encoder → Transformer over conformer tokens  (ensemble mode)
+       ├─ .head              → 2-layer MLP → scalar
+       ├─ .proj              → optional Linear(d_gnn → d_model)
+       └─ .cls_token         → learnable CLS prepended to conformer sequence
 
-DDP wrapping: only gnn_encoder is wrapped with DistributedDataParallel
+DDP wrapping: modelmodule.model (CycloFormerCore) is wrapped with
+              DistributedDataParallel, covering all learnable parameters.
               (rank 0 logs parameter count)
 ```
 

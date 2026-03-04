@@ -23,7 +23,6 @@ data:
   rep_frame_only: false
   n_conformers: 5
   ff: mmff
-  one_hot_formal_charge: false
   split: null
   batch_size: 4
   num_workers: 0
@@ -48,6 +47,7 @@ gnn:
   lambda_distance: 0.3
   dropout_cpmp: 0.1
   distance_matrix_kernel: softmax
+  one_hot_formal_charge: true      # CPMP only: expand scalar charge -> 3-dim one-hot at forward time
   # --- SE3T-specific (ignored when type != se3t) ---
   se3t_num_layers: 4
   num_channels: 32

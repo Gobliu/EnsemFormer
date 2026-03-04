@@ -22,19 +22,19 @@ See `docs/` files `origin-models.md` and `unification.md` for detailed version c
 
 ## Architecture
 ```
-N conformers -> [shared GNN encoder] -> conformer embeddings (B, N_conf, d_gnn)
-                                                  |
+N conformers -> [shared GNN backbone] -> conformer embeddings (B, N_conf, d_gnn)
+                                                   |
                                    [Transformer encoder over conformers]  (ensemble mode)
-                                                  |                        or direct pool (standalone mode)
-                                    [CLS or mean-pool] -> [MLP head] -> scalar
+                                                   |                        or direct pool (standalone mode)
+                                     [CLS or mean-pool] -> [MLP head] -> scalar
 ```
 
 ### Key Files
 - `src/networks/cycloformer.py` — CycloFormerModule: main model, supports `gnn_type: egnn|cpmp|se3t` + `mode: ensemble|standalone`
-- `src/networks/egnn_encoder.py` — EGNNEncoder (pure PyTorch, no DGL)
-- `src/networks/cpmp_encoder.py` — CPMPEncoder (graph transformer)
-- `src/networks/se3t_encoder.py` — SE3TEncoder (wraps NVIDIA SE3Transformer)
-- `src/se3_transformer/` — NVIDIA SE3T model code adapted with relative imports (MIT)
+- `src/networks/egnn_backbone.py` — EGNNBackbone (pure PyTorch, no DGL)
+- `src/networks/cpmp_backbone.py` — CPMPBackbone (graph transformer)
+- `src/networks/se3t_backbone.py` — SE3TBackbone (wraps NVIDIA SE3Transformer)
+- `src/se3_transformer_lib/` — NVIDIA SE3T model code adapted with relative imports (MIT)
 - `config/default.yaml` — all hyperparameters
 - `scripts/main_train.py` — training entrypoint
 - `models/Wrapper.py` — abstract Module base class
@@ -42,9 +42,9 @@ N conformers -> [shared GNN encoder] -> conformer embeddings (B, N_conf, d_gnn)
 
 ### Model Switching
 ```bash
-python scripts/main_train.py --gnn_type egnn       # EGNN encoder
-python scripts/main_train.py --gnn_type cpmp       # CPMP encoder
-python scripts/main_train.py --gnn_type se3t       # SE3-Transformer encoder
+python scripts/main_train.py --gnn_type egnn       # EGNN backbone
+python scripts/main_train.py --gnn_type cpmp       # CPMP backbone
+python scripts/main_train.py --gnn_type se3t       # SE3-Transformer backbone
 python scripts/main_train.py --mode standalone     # skip conformer transformer
 ```
 

@@ -47,62 +47,51 @@ def _merge_env_molecules(env_results: dict[str, list[dict]]) -> list[dict]:
     Parameters
     ----------
     env_results : {env_name: [molecule_dicts]} where each molecule_dict has
-        keys 'conformers', 'label', 'CycPeptMPDB_ID', etc.
+        keys 'nf', 'adj', 'bond_types', 'conformers', 'label', 'CycPeptMPDB_ID', etc.
 
     Returns
     -------
     List of merged molecule dicts with structure:
-        {"envs": {env: conformers, ...}, "label", "CycPeptMPDB_ID", ...}
+        {"nf", "adj", "bond_types", "envs": {env: [(dist, coords), ...], ...}, "label", ...}
     """
-    # Align molecules across envs by CycPeptMPDB_ID
     by_id: dict[str, dict] = {}
     for env, molecules in env_results.items():
         for mol in molecules:
             cpmp_id = mol["CycPeptMPDB_ID"]
             if cpmp_id not in by_id:
                 entry: dict = {
-                    "envs": {},
-                    "label": mol["label"],
+                    "nf":         mol["nf"],
+                    "adj":        mol["adj"],
+                    "bond_types": mol["bond_types"],
+                    "envs":       {env: mol["conformers"]},
+                    "label":      mol["label"],
                     "CycPeptMPDB_ID": cpmp_id,
-                    "rep_frame_idx": mol.get("rep_frame_idx"),
+                    "rep_frame_idxs": {env: mol["rep_frame_idx"]} if mol.get("rep_frame_idx") is not None else {},
                 }
                 if "SMILES" in mol:
                     entry["SMILES"] = mol["SMILES"]
                 if "Structurally_Unique_ID" in mol:
                     entry["Structurally_Unique_ID"] = mol["Structurally_Unique_ID"]
                 by_id[cpmp_id] = entry
-            by_id[cpmp_id]["envs"][env] = mol["conformers"]
-
-    merged = list(by_id.values())
-
-    # Cross-env topology check
-    for mol in merged:
-        ref_adj: np.ndarray | None = None
-        ref_bt: np.ndarray | None = None
-        ref_env: str | None = None
-        for env, confs in mol["envs"].items():
-            if not confs:
-                continue
-            adj = confs[0][1]
-            bt = confs[0][4]
-            if ref_adj is None:
-                ref_adj = adj
-                ref_bt = bt
-                ref_env = env
             else:
-                assert ref_bt is not None
-                if not np.array_equal(adj, ref_adj):
-                    raise ValueError(
-                        f"Cross-env adjacency matrix mismatch for {mol['CycPeptMPDB_ID']} "
-                        f"between {ref_env} and {env}."
-                    )
-                if not np.array_equal(bt, ref_bt):
-                    raise ValueError(
-                        f"Cross-env bond type matrix mismatch for {mol['CycPeptMPDB_ID']} "
-                        f"between {ref_env} and {env}."
-                    )
+                # Cross-env topology check (inline, includes nf)
+                entry = by_id[cpmp_id]
+                ref_env = next(iter(entry["envs"]))
+                for field, label in [
+                    ("adj", "adjacency"),
+                    ("bond_types", "bond type"),
+                    ("nf", "node feature"),
+                ]:
+                    if not np.array_equal(mol[field], entry[field]):
+                        raise ValueError(
+                            f"Cross-env {label} matrix mismatch for {cpmp_id} "
+                            f"between {ref_env} and {env}."
+                        )
+                entry["envs"][env] = mol["conformers"]
+                if mol.get("rep_frame_idx") is not None:
+                    entry["rep_frame_idxs"][env] = mol["rep_frame_idx"]
 
-    return merged
+    return list(by_id.values())
 
 
 def main():
@@ -133,7 +122,6 @@ def main():
         csv_path=paths["csv_file"],
         target_col=data["target_col"],
         traj_dir=paths["traj_dir"],
-        one_hot_formal_charge=data["one_hot_formal_charge"],
     )
 
     env_str = "+".join(sorted(envs))

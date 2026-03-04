@@ -69,16 +69,21 @@ class CPMPBackbone(nn.Module):
         d_edge: int | None = None,
         scale_norm: bool = False,
         init_type: str = "uniform",
+        one_hot_formal_charge: bool = True,
         **kwargs,
     ):
         super().__init__()
         self.aggregation_type = aggregation_type
         self.d_model = d_model
         self._use_dummy = aggregation_type == "dummy_node"
+        self._one_hot_fc = one_hot_formal_charge
+
+        # Formal charge: scalar (index 22) -> 3-dim one-hot expands d_atom by 2
+        effective_d_atom = d_atom + 2 if one_hot_formal_charge else d_atom
 
         # When using dummy_node aggregation, the embedding layer needs d_atom+1
         # (extra column for the dummy node indicator bit, prepended at forward time)
-        embed_d_atom = d_atom + 1 if self._use_dummy else d_atom
+        embed_d_atom = effective_d_atom + 1 if self._use_dummy else effective_d_atom
 
         attention_kwargs = {
             "h": h,
@@ -109,6 +114,17 @@ class CPMPBackbone(nn.Module):
                     fn(p)
 
         self.apply(_init_fn)
+
+    def _expand_formal_charge(self, src: torch.Tensor) -> torch.Tensor:
+        """Expand scalar formal charge (index 22) to 3-dim one-hot in-place.
+
+        Input  src : (B, N_atoms, 25)
+        Output src : (B, N_atoms, 27)
+        """
+        charge = src[:, :, 22]  # (B, N_atoms)
+        vals = torch.tensor([-1., 0., 1.], device=src.device, dtype=src.dtype)
+        charge_oh = (charge.unsqueeze(-1) == vals).float()  # (B, N_atoms, 3)
+        return torch.cat([src[:, :, :22], charge_oh, src[:, :, 23:]], dim=-1)
 
     def _prepend_dummy_node(self, src, src_mask, adj_matrix, distances_matrix, edges_att):
         """Prepend a dummy (CLS) node at position 0 for dummy_node aggregation."""
@@ -168,6 +184,9 @@ class CPMPBackbone(nn.Module):
         Tensor  (B, d_model)
             Graph-level conformer embedding.
         """
+        if self._one_hot_fc:
+            src = self._expand_formal_charge(src)
+
         if self._use_dummy:
             src, src_mask, adj_matrix, distances_matrix, edges_att = (
                 self._prepend_dummy_node(src, src_mask, adj_matrix, distances_matrix, edges_att)

@@ -19,7 +19,6 @@ def load_single_conformer_from_smiles(
     labels,
     ff: str = "mmff",
     ignore_interfrag: bool = True,
-    one_hot_formal_charge: bool = False,
 ) -> tuple[list, list]:
     """Featurize a list of SMILES into single-conformer graphs.
 
@@ -43,7 +42,7 @@ def load_single_conformer_from_smiles(
             except Exception:
                 AllChem.Compute2DCoords(mol)
 
-            afm, adj, dist, pos, bt = featurize_mol(mol, one_hot_formal_charge)
+            afm, adj, dist, pos, bt = featurize_mol(mol)
             x_all.append([afm, adj, dist, pos, bt])
             y_all.append([label])
         except (ValueError, Exception) as e:
@@ -56,7 +55,6 @@ def load_ensemble_from_smiles(
     n_conformers: int,
     ff: str = "mmff",
     max_attempts: int = 5000,
-    one_hot_formal_charge: bool = False,
 ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
     """Generate N conformers from a SMILES string using RDKit.
 
@@ -72,7 +70,6 @@ def load_ensemble_from_smiles(
         Force field: 'mmff' or 'uff'.
     max_attempts : int
         Maximum embedding attempts per conformer.
-    one_hot_formal_charge : bool
 
     Returns
     -------
@@ -96,7 +93,7 @@ def load_ensemble_from_smiles(
             logging.warning(f"EmbedMultipleConfs failed for SMILES: {smiles}. Trying 2D fallback.")
             AllChem.Compute2DCoords(mol)
             mol = Chem.RemoveHs(mol)
-            return [featurize_mol(mol, one_hot_formal_charge)]
+            return [featurize_mol(mol)]
 
         if ff == "uff":
             AllChem.UFFOptimizeMoleculeConfs(mol, numThreads=0)
@@ -107,7 +104,7 @@ def load_ensemble_from_smiles(
 
         # Node features, adjacency, and bond types are conformation-independent
         node_features = np.array(
-            [get_atom_features(atom, one_hot_formal_charge) for atom in mol.GetAtoms()]
+            [get_atom_features(atom) for atom in mol.GetAtoms()]
         )
         adj_matrix = np.eye(mol.GetNumAtoms())
         for bond in mol.GetBonds():
