@@ -28,7 +28,7 @@ def _make_egnn_batch(B=2, N_conf=3, N_atoms=6, F=25):
 
 @pytest.mark.parametrize("pooling", ["cls", "mean"])
 def test_cycloformer_cpmp_forward_shape(pooling):
-    from src.networks.cycloformer import CycloFormerModule
+    from src.networks.cycloformer_model import CycloFormerModule
 
     d_atom = 25
     d_gnn = 32
@@ -59,7 +59,7 @@ def test_cycloformer_cpmp_forward_shape(pooling):
 
 
 def test_cycloformer_cpmp_gradient_flow():
-    from src.networks.cycloformer import CycloFormerModule
+    from src.networks.cycloformer_model import CycloFormerModule
 
     d_atom = 25
     module = CycloFormerModule(
@@ -93,7 +93,7 @@ def test_cycloformer_cpmp_gradient_flow():
 
 def test_cycloformer_conformer_mask():
     """Padding conformers (mask=False) should not crash the forward pass."""
-    from src.networks.cycloformer import CycloFormerModule
+    from src.networks.cycloformer_model import CycloFormerModule
 
     d_atom = 25
     module = CycloFormerModule(

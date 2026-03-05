@@ -61,14 +61,13 @@ logging: INFO on rank 0 only (or always silent if --silent)
 
 ```
 ConformerEnsembleDataModule(
-    data_dir   = repo_root / paths.data_dir,
-    csv_path   = data.csv_file,            # default: pampa.csv
-    conformer_source = data.conformer_source,  # 'smiles' | 'pdb'
-    n_conformers     = data.n_conformers,  # default: 8
-    pdb_dir    = paths.pdb_dir,
-    split      = data.split,              # 0-9 cross-val index
-    ff         = data.ff,                 # 'mmff' | 'uff'
-    one_hot_formal_charge = data.one_hot_formal_charge,
+    data_dir    = repo_root / paths.data_dir,
+    csv_path    = paths.csv_file,
+    cache_file  = paths.cache_file,       # .pt from preprocess_trajectories.py
+    env         = data.env,               # [water], [hexane], [water, hexane]
+    n_conformers = data.n_conformers,     # frames per env per molecule
+    rep_frame_only = data.rep_frame_only,
+    split       = data.split,             # 0-9 cross-val index
     batch_size  = data.batch_size,
     num_workers = data.num_workers,
     seed        = data.seed,
@@ -78,7 +77,8 @@ ConformerEnsembleDataModule(
   ├─ ConformerEnsembleDataset  (val)       ├─ split from CSV
   └─ ConformerEnsembleDataset  (test)    ──┘
        each molecule → ConformerEnsembleMolecule
-         .conformers : list[(node_features, adj_matrix, dist_matrix)]
+         .node_feat  : (N_atoms, F)
+         .conformers : list[(dist, coords)]
          .y          : float  (regression target)
 
   conformer_collate_fn  pads atoms & conformers → batch dict

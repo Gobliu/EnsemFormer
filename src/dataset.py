@@ -28,13 +28,13 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 class ConformerEnsembleMolecule:
     """A single molecule represented as an ensemble of conformers.
 
-    Topology arrays (nf, adj, bond_types) are stored once at molecule level
-    since they are identical across all conformer frames. Per-frame data is
-    stored as a list of (dist, coords) 2-tuples.
+    Topology arrays (node_feat, adj, bond_types) are stored once at molecule
+    level since they are identical across all conformer frames. Per-frame data
+    is stored as a list of (dist, coords) 2-tuples.
 
     Parameters
     ----------
-    nf : np.ndarray (N_atoms, F)
+    node_feat : np.ndarray (N_atoms, F)
         Node features — topology-invariant.
     adj : np.ndarray (N_atoms, N_atoms)
         Adjacency matrix — topology-invariant.
@@ -54,7 +54,7 @@ class ConformerEnsembleMolecule:
 
     def __init__(
         self,
-        nf: np.ndarray,
+        node_feat: np.ndarray,
         adj: np.ndarray,
         bond_types: np.ndarray,
         conformers: list,
@@ -64,7 +64,7 @@ class ConformerEnsembleMolecule:
         Structurally_Unique_ID: str | None = None,
         rep_frame_idxs: dict | None = None,
     ):
-        self.nf = nf
+        self.node_feat = node_feat
         self.adj = adj
         self.bond_types = bond_types
         self.conformers = conformers
@@ -120,8 +120,8 @@ def conformer_collate_fn(
     """
     B = len(batch)
     N_conf_max = max(mol.n_conformers for mol in batch)
-    N_atoms_max = max(mol.nf.shape[0] for mol in batch)
-    F = batch[0].nf.shape[1]
+    N_atoms_max = max(mol.node_feat.shape[0] for mol in batch)
+    F = batch[0].node_feat.shape[1]
 
     # Topology arrays: (B, N_atoms_max, ...) — broadcast to conformer dim after filling
     node_feat_2d = np.zeros((B, N_atoms_max, F), dtype=np.float32)
@@ -137,11 +137,11 @@ def conformer_collate_fn(
 
     for i, mol in enumerate(batch):
         targets[i, 0] = mol.y
-        n_a = mol.nf.shape[0]
+        n_a = mol.node_feat.shape[0]
         atom_mask[i, :n_a] = True
 
         # Topology — stored once per molecule
-        node_feat_2d[i, :n_a, :]    = mol.nf
+        node_feat_2d[i, :n_a, :]    = mol.node_feat
         adj_2d[i, :n_a, :n_a]       = mol.adj
         bond_type_2d[i, :n_a, :n_a] = mol.bond_types
 
@@ -177,7 +177,7 @@ def conformer_collate_fn(
 class ConformerEnsembleDataModule(DataModule):
     """DataModule that loads a preprocessed .pt cache and splits data.
 
-    The cache file must be produced by ``scripts/traj_preprocess.py`` before
+    The cache file must be produced by ``scripts/preprocess_trajectories.py`` before
     training. This DataModule does **not** perform featurization.
 
     Parameters
@@ -186,7 +186,7 @@ class ConformerEnsembleDataModule(DataModule):
     csv_path : str
         CSV filename relative to data_dir.
     cache_file : str
-        Path to a .pt file produced by ``scripts/traj_preprocess.py``.
+        Path to a .pt file produced by ``scripts/preprocess_trajectories.py``.
     env : list[str] or str or None
         Environment(s) to use from the cache (e.g. ``["water"]`` or
         ``["water", "hexane"]``).  If None, all envs in the cache are used.
@@ -215,14 +215,14 @@ class ConformerEnsembleDataModule(DataModule):
     ):
         if cache_file is None:
             raise ValueError(
-                "cache_file is required. Run `python scripts/traj_preprocess.py` first "
+                "cache_file is required. Run `python scripts/preprocess_trajectories.py` first "
                 "to produce a .pt cache, then set paths.cache_file in your config."
             )
         cache_path = pathlib.Path(cache_file)
         if not cache_path.exists():
             raise FileNotFoundError(
                 f"Cache file not found: {cache_path}\n"
-                "Run `python scripts/traj_preprocess.py` first."
+                "Run `python scripts/preprocess_trajectories.py` first."
             )
 
         self._data_dir = pathlib.Path(data_dir)
@@ -249,9 +249,6 @@ class ConformerEnsembleDataModule(DataModule):
 
         self._setup()
 
-    def prepare_data(self):
-        pass
-
     def _setup(self):
         csv_file = self._data_dir / self._csv_path
         df = pd.read_csv(csv_file)
@@ -266,13 +263,18 @@ class ConformerEnsembleDataModule(DataModule):
         # Convert raw dicts from cache into ConformerEnsembleMolecule objects
         molecules = []
         for m in raw_molecules:
-            rep_frame_idxs = m.get("rep_frame_idxs") or {}
+            if "rep_frame_idxs" not in m:
+                raise KeyError(
+                    f"Cache entry for '{m.get('CycPeptMPDB_ID', '?')}' is missing "
+                    f"'rep_frame_idxs'. Re-run preprocess_trajectories.py to rebuild the cache."
+                )
+            rep_frame_idxs = m["rep_frame_idxs"] or {}
             confs = self._select_env_conformers(m["envs"], selected_envs, rep_frame_idxs)
             if not confs:
                 continue
             molecules.append(
                 ConformerEnsembleMolecule(
-                    nf=m["nf"],
+                    node_feat=m["node_feat"],
                     adj=m["adj"],
                     bond_types=m["bond_types"],
                     conformers=confs,
@@ -289,7 +291,11 @@ class ConformerEnsembleDataModule(DataModule):
             split_map = dict(zip(df["CycPeptMPDB_ID"].astype(str), df[split_col]))
             train_mols, val_mols, test_mols = [], [], []
             for mol in molecules:
-                assignment = split_map.get(mol.CycPeptMPDB_ID, "train")
+                if mol.CycPeptMPDB_ID not in split_map:
+                    raise KeyError(
+                        f"Molecule '{mol.CycPeptMPDB_ID}' not found in split column '{split_col}'."
+                    )
+                assignment = split_map[mol.CycPeptMPDB_ID]
                 if assignment == "train":
                     train_mols.append(mol)
                 elif assignment == "val":
@@ -297,7 +303,11 @@ class ConformerEnsembleDataModule(DataModule):
                 elif assignment == "test":
                     test_mols.append(mol)
                 else:
-                    train_mols.append(mol)  # fallback
+                    raise ValueError(
+                        f"Unknown split assignment '{assignment}' for molecule "
+                        f"'{mol.CycPeptMPDB_ID}' in column '{split_col}'. "
+                        f"Expected 'train', 'val', or 'test'."
+                    )
         else:
             rng = np.random.default_rng(self._seed)
             idx = rng.permutation(len(molecules))
@@ -328,7 +338,13 @@ class ConformerEnsembleDataModule(DataModule):
         """
         confs: list = []
         for env in envs_to_use:
-            env_confs = env_dict.get(env, [])
+            if env not in env_dict:
+                raise KeyError(
+                    f"Requested env '{env}' not found in cached molecule. "
+                    f"Available envs: {list(env_dict.keys())}. "
+                    f"Re-run preprocess_trajectories.py with the correct --env flag."
+                )
+            env_confs = env_dict[env]
             if not env_confs:
                 continue
             if self._rep_frame_only:

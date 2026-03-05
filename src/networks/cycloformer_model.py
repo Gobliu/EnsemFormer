@@ -158,12 +158,11 @@ class CycloFormerCore(nn.Module):
         edges, _ = get_edges_batch(N_atoms, B * N_conf, device=node_feat.device)
 
         # Strip edges that touch padded atoms so they cannot corrupt real-atom messages
-        atom_mask = batch.get("atom_mask")  # (B, N_atoms) BoolTensor or None
-        if atom_mask is not None:
-            node_valid = atom_mask.unsqueeze(1).expand(-1, N_conf, -1).reshape(B * N_conf * N_atoms)
-            row_e, col_e = edges
-            keep = node_valid[row_e] & node_valid[col_e]
-            edges = [row_e[keep], col_e[keep]]
+        atom_mask = batch["atom_mask"]  # (B, N_atoms) BoolTensor
+        node_valid = atom_mask.unsqueeze(1).expand(-1, N_conf, -1).reshape(B * N_conf * N_atoms)
+        row_e, col_e = edges
+        keep = node_valid[row_e] & node_valid[col_e]
+        edges = [row_e[keep], col_e[keep]]
 
         # Build per-edge bond type features if enabled
         edge_attr = None
@@ -181,11 +180,8 @@ class CycloFormerCore(nn.Module):
 
         # Masked mean-pool: average only over real atoms, not padding
         h_graphs = h_flat.view(B * N_conf, N_atoms, -1)  # (B*N_conf, N_atoms, d)
-        if atom_mask is not None:
-            mask_bc = atom_mask.unsqueeze(1).expand(-1, N_conf, -1).reshape(B * N_conf, N_atoms, 1).to(dtype=h_graphs.dtype)
-            h_pooled = (h_graphs * mask_bc).sum(dim=1) / mask_bc.sum(dim=1).clamp(min=1)
-        else:
-            h_pooled = h_graphs.mean(dim=1)
+        mask_bc = atom_mask.unsqueeze(1).expand(-1, N_conf, -1).reshape(B * N_conf, N_atoms, 1).to(dtype=h_graphs.dtype)
+        h_pooled = (h_graphs * mask_bc).sum(dim=1) / mask_bc.sum(dim=1).clamp(min=1)
         return h_pooled.view(B, N_conf, -1)  # (B, N_conf, d_gnn)
 
     def _encode_conformers_cpmp(self, batch: dict) -> torch.Tensor:
@@ -244,7 +240,7 @@ class CycloFormerCore(nn.Module):
         """
         node_feat = batch["node_feat"]   # (B, N_conf, N_atoms, F)
         coords = batch["coords"]         # (B, N_conf, N_atoms, 3)
-        atom_mask = batch.get("atom_mask")  # (B, N_atoms) or None
+        atom_mask = batch["atom_mask"]  # (B, N_atoms) BoolTensor
         B, N_conf, N_atoms, F = node_feat.shape
 
         # Flatten: treat each (molecule, conformer) pair as one graph
@@ -252,10 +248,7 @@ class CycloFormerCore(nn.Module):
         x = coords.view(B * N_conf, N_atoms, 3)
 
         # Expand atom_mask to cover all conformers
-        if atom_mask is not None:
-            mask = atom_mask.unsqueeze(1).expand(-1, N_conf, -1).reshape(B * N_conf, N_atoms)
-        else:
-            mask = None
+        mask = atom_mask.unsqueeze(1).expand(-1, N_conf, -1).reshape(B * N_conf, N_atoms)
 
         # Build bond type tensor if enabled
         bt_flat = None
@@ -266,7 +259,7 @@ class CycloFormerCore(nn.Module):
         graph_emb = self.backbone(h, x, node_mask=mask, bond_type=bt_flat)  # (B*N_conf, d_gnn)
         return graph_emb.view(B, N_conf, -1)  # (B, N_conf, d_gnn)
 
-    def encode_conformers(self, batch: dict) -> torch.Tensor:
+    def _encode_conformers(self, batch: dict) -> torch.Tensor:
         """Dispatch to the correct encoder and return (B, N_conf, d_model)."""
         if self.gnn_type == "egnn":
             tokens = self._encode_conformers_egnn(batch)
@@ -283,7 +276,7 @@ class CycloFormerCore(nn.Module):
         -------
         Tensor  (B, N_conf, d_model)
         """
-        return self.encode_conformers(batch)
+        return self._encode_conformers(batch)
 
     def forward(self, batch: dict) -> torch.Tensor:
         """Full forward pass.
@@ -299,17 +292,14 @@ class CycloFormerCore(nn.Module):
         -------
         Tensor  (B, 1)
         """
-        tokens = self.encode_conformers(batch)  # (B, N_conf, d_model)
+        tokens = self._encode_conformers(batch)  # (B, N_conf, d_model)
         B = tokens.size(0)
 
         # ---- Standalone mode: skip conformer transformer ----
         if self.mode == "standalone":
-            conf_mask = batch.get("conformer_mask")
-            if conf_mask is not None:
-                mask = conf_mask.unsqueeze(-1).to(dtype=tokens.dtype)  # (B, N_conf, 1)
-                pooled = (tokens * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
-            else:
-                pooled = tokens.mean(dim=1)
+            conf_mask = batch["conformer_mask"]  # (B, N_conf) BoolTensor
+            mask = conf_mask.unsqueeze(-1).to(dtype=tokens.dtype)  # (B, N_conf, 1)
+            pooled = (tokens * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
             return self.head(pooled)  # (B, 1)
 
         # ---- Ensemble mode: conformer transformer ----
@@ -317,13 +307,10 @@ class CycloFormerCore(nn.Module):
         tokens = torch.cat([cls, tokens], dim=1)  # (B, N_conf+1, d_model)
 
         # Build key_padding_mask: True means IGNORE.
-        conf_mask = batch.get("conformer_mask")  # (B, N_conf) -- True where conformer exists
-        if conf_mask is not None:
-            padding_mask = ~conf_mask  # (B, N_conf)
-            cls_col = torch.zeros(B, 1, dtype=torch.bool, device=padding_mask.device)
-            key_padding_mask = torch.cat([cls_col, padding_mask], dim=1)  # (B, N_conf+1)
-        else:
-            key_padding_mask = None
+        conf_mask = batch["conformer_mask"]  # (B, N_conf) BoolTensor
+        padding_mask = ~conf_mask  # (B, N_conf)
+        cls_col = torch.zeros(B, 1, dtype=torch.bool, device=padding_mask.device)
+        key_padding_mask = torch.cat([cls_col, padding_mask], dim=1)  # (B, N_conf+1)
 
         out = self.conformer_encoder(tokens, key_padding_mask)  # (B, N_conf+1, d_model)
 

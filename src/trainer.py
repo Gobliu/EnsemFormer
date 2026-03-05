@@ -124,7 +124,7 @@ class Trainer:
         grad_scaler = torch.amp.GradScaler("cuda", enabled=args.amp)
 
         # Resume from checkpoint if specified
-        load_ckpt = config.get("paths", {}).get("load_checkpoint")
+        load_ckpt = config["paths"]["load_checkpoint"]
         epoch_start = 0
         if load_ckpt:
             epoch_start = load_state(module, pathlib.Path(load_ckpt), callbacks) + 1

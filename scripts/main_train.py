@@ -88,7 +88,7 @@ def main():
         get_next_version,
     )
     from src.dataset import ConformerEnsembleDataModule
-    from src.networks.cycloformer import CycloFormerModule
+    from src.networks.cycloformer_model import CycloFormerModule
     from src.trainer import Trainer
     from src.callbacks import EarlyStoppingCallback, AllMetricsCallback
     from src.loggers import CSVLogger, TensorBoardLogger, LoggerCollection
@@ -121,9 +121,14 @@ def main():
     paths_cfg = config["paths"]
     data_cfg = config["data"]
 
-    cache_file = paths_cfg.get("cache_file")
-    if cache_file:
-        cache_file = str(_REPO_ROOT / cache_file)
+    cache_file = paths_cfg["cache_file"]
+    if cache_file is None:
+        raise ValueError(
+            "paths.cache_file is required in config. "
+            "Run `python scripts/preprocess_trajectories.py` first, then set "
+            "paths.cache_file to the output .pt path."
+        )
+    cache_file = str(_REPO_ROOT / cache_file)
 
     cfg_env = data_cfg["env"]
     env = cfg_env if isinstance(cfg_env, list) else [cfg_env]
@@ -183,8 +188,8 @@ def main():
         max_conformers=tf_cfg["max_conformers"],
         device=device,
         local_rank=local_rank,
-        mode=gnn_cfg.get("mode", "ensemble"),
-        use_bond_type=gnn_cfg.get("use_bond_type", False),
+        mode=gnn_cfg["mode"],
+        use_bond_type=gnn_cfg["use_bond_type"],
         **gnn_kwargs,
     )
 

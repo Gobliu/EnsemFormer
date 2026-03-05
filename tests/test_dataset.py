@@ -99,7 +99,7 @@ def test_topology_broadcast():
     mol = _make_molecule(n_conformers=4, n_atoms=5, d_atom=25)
     batch = conformer_collate_fn([mol])
 
-    # node_feat[0, 0] == node_feat[0, 1] == ... (broadcast from mol.nf)
+    # node_feat[0, 0] == node_feat[0, 1] == ... (broadcast from mol.node_feat)
     for j in range(1, 4):
         assert torch.equal(batch["node_feat"][0, 0], batch["node_feat"][0, j])
         assert torch.equal(batch["adj"][0, 0], batch["adj"][0, j])

@@ -5,13 +5,13 @@ It covers the `CycloFormerModule` dispatch layer and per-encoder tensor flow.
 
 > For everything upstream — featurization, trajectory parsing, cache format,
 > conformer subsampling, and batch collation — see
-> [data-preprocessing.md](data-preprocessing.md).
+> [mol-data-preprocessing.md](mol-data-preprocessing.md).
 
 ---
 
 ## 1. From Batch Dict to Encoder
 
-After `conformer_collate_fn` (described in `data-preprocessing.md §Batch Collation`),
+After `conformer_collate_fn` (described in `mol-data-preprocessing.md §Batch Collation`),
 `CycloFormerModule` receives a single dict of dense padded tensors and dispatches
 to the appropriate encoder:
 

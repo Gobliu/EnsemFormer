@@ -29,16 +29,16 @@ Conformer N ──┘                    [Transformer encoder]
 
 ## Data Preprocessing
 
-Parsing 5000+ trajectory PDB files is slow (~10–20 min for all envs). Run `traj_preprocess.py` once to cache the featurized molecules to disk, then all subsequent training runs load from cache instantly.
+Parsing 5000+ trajectory PDB files is slow (~10–20 min for all envs). Run `preprocess_trajectories.py` once to cache the featurized molecules to disk, then all subsequent training runs load from cache instantly.
 
 ### Step 1 — preprocess trajectories (run once)
 
 ```bash
 # Single env (default from config)
-python scripts/traj_preprocess.py
+python scripts/preprocess_trajectories.py
 
 # Multiple envs in one cache
-python scripts/traj_preprocess.py --env water hexane
+python scripts/preprocess_trajectories.py --env water hexane
 ```
 
 Each run produces **two** cache files — one with hydrogens removed, one with hydrogens kept:
@@ -61,7 +61,7 @@ paths:
 
 `cache_file` is **required** — training will not start without it.
 
-> **Note**: regenerate the cache only if you change `one_hot_formal_charge` or add new envs.
+> **Note**: regenerate the cache only if you add new envs or change `remove_h`.
 > `n_conformers`, `env`, and `rep_frame_only` do **not** require a new cache.
 
 ---

@@ -5,14 +5,14 @@
 EnsemFormer's preprocessing converts cyclic peptide trajectory data into cached graph
 representations for GNN training. The pipeline runs in two phases:
 
-1. **Offline preprocessing** (`scripts/traj_preprocess.py`) — run once, produces `.pt` cache files
+1. **Offline preprocessing** (`scripts/preprocess_trajectories.py`) — run once, produces `.pt` cache files
 2. **Training-time loading** (`src/dataset.py`) — loads cache, subsamples conformers, pads batches
 
 ```
 Raw Data (CSV + trajectory PDBs)
         │
         ▼
-  [traj_preprocess.py]  ──────►  cache_traj_{env}_{noH|withH}.pt
+  [preprocess_trajectories.py]  ──►  cache_traj_{env}_{noH|withH}.pt
                                           │
                                           ▼
                               [ConformerEnsembleDataModule]
@@ -39,42 +39,41 @@ Raw Data (CSV + trajectory PDBs)
 
 ```bash
 # Single env (default from config)
-python scripts/traj_preprocess.py
+python scripts/preprocess_trajectories.py
 
 # Multiple envs
-python scripts/traj_preprocess.py --env water hexane
+python scripts/preprocess_trajectories.py --env water hexane
 
 # Custom config
-python scripts/traj_preprocess.py --config config/dev.yaml
+python scripts/preprocess_trajectories.py --config config/dev.yaml
 ```
 
 ### Pipeline Flow
 
 ```
-traj_preprocess.py
+preprocess_trajectories.py
 │
 └─ for each hydrogen variant (noH, withH):
     │
-    ├─ for each env (water / hexane):           ← pipeline.py :: featurize_molecules()
-    │   │
-    │   └─ for each molecule in CSV:
-    │       │
-    │       └─ pdb_loading.py :: load_frames_from_traj_pdb()
-    │           │
-    │           ├─ parse MODEL/ENDMDL blocks from trajectory PDB
-    │           └─ for each frame:
-    │               ├─ RDKit: PDB block → Mol object
-    │               ├─ atom_features.py :: featurize_mol()
-    │               │     builds: nf, adj, dist, coords, bond_types
-    │               └─ consistency check vs. frame 0:
-    │                     nf == ref?  adj == ref?  bond_types == ref?
-    │                     └─ ValueError if any mismatch
-    │
-    ├─ _merge_env_molecules()                   ← traj_preprocess.py
-    │   ├─ align molecules across envs by CycPeptMPDB_ID
-    │   ├─ hoist nf / adj / bond_types to molecule level (topology stored once)
-    │   └─ cross-env consistency check: same checks as above
-    │         └─ ValueError if any mismatch
+    └─ mol_featurizer.py :: featurize_all_molecules()
+        │
+        ├─ read CSV once
+        │
+        └─ for each molecule in CSV:          ← mol_featurizer.py :: featurize_single_molecule()
+            │
+            └─ for each env (water / hexane):
+                │
+                └─ pdb_loader.py :: load_frames_from_traj_pdb()
+                    │
+                    ├─ parse MODEL/ENDMDL blocks from trajectory PDB
+                    └─ for each frame:
+                        ├─ RDKit: PDB block → Mol object
+                        ├─ graph_builder.py :: mol_to_graph()
+                        │     builds: node_feat, adj, dist, coords, bond_types
+                        └─ within-traj consistency check vs. frame 0
+                │
+                └─ cross-env topology check (node_feat, adj, bond_types vs first env)
+                      └─ ValueError if any mismatch
     │
     └─ torch.save() → cache_traj_{envs}_{noH|withH}.pt
 ```
@@ -82,12 +81,12 @@ traj_preprocess.py
 ### Notes
 
 - Hydrogens are stripped (or kept) before featurization based on the `remove_h` flag.
-- `nf`, `adj`, and `bond_types` encode molecular topology — they are invariant across MD frames
+- `node_feat`, `adj`, and `bond_types` encode molecular topology — they are invariant across MD frames
   and stored once per molecule. Only `dist` and `coords` vary per frame.
 
 ### Per-Frame Featurization
 
-Each frame is featurized into these components (`featurize_mol` in `atom_features.py`):
+Each frame is featurized into these components (`mol_to_graph` in `graph_builder.py`):
 
 | Matrix | Shape | Description |
 |--------|-------|-------------|
@@ -100,14 +99,14 @@ Each frame is featurized into these components (`featurize_mol` in `atom_feature
 *The CPMP encoder internally prepends a dummy (CLS) node at forward time when using
 `aggregation_type='dummy_node'`. This is not part of the cached data.*
 
-### Atom Features (25-dim default)
+### Atom Features (25-dim)
 
 | Feature | Encoding | Dim | Values |
 |---------|----------|-----|--------|
 | Atomic number | One-hot | 11 | [5,6,7,8,9,15,16,17,35,53,other] |
 | Degree | One-hot | 6 | [0,1,2,3,4,5] |
 | Total H count | One-hot | 5 | [0,1,2,3,4] |
-| Formal charge | Scalar | 1 | Raw value (or 3-dim one-hot if configured) |
+| Formal charge | Scalar | 1 | Raw value |
 | In ring | Binary | 1 | 0/1 |
 | Aromatic | Binary | 1 | 0/1 |
 
@@ -119,7 +118,7 @@ Each frame is featurized into these components (`featurize_mol` in `atom_feature
     "molecules": [
         {
             # Topology — identical across all frames, stored once per molecule
-            "nf":         ndarray (N_atoms, 25),      # node features
+            "node_feat":  ndarray (N_atoms, 25),      # node features
             "adj":        ndarray (N_atoms, N_atoms),  # adjacency matrix — bool; True if bonded or self-loop
             "bond_types": ndarray (N_atoms, N_atoms),  # bond type matrix — int8; 0=none, 1=single, 2=double, 3=triple, 4=aromatic
             # Per-frame data — only what actually varies across MD frames
@@ -135,7 +134,7 @@ Each frame is featurized into these components (`featurize_mol` in `atom_feature
         },
         ...  # 5,160 molecules
     ],
-    "d_atom": 25,  # feature dimension (or 27 with one_hot_formal_charge)
+    "d_atom": 25,  # feature dimension
     "envs": ["hexane", "water"]   # environments stored in this cache
 }
 ```
@@ -189,18 +188,6 @@ Where B = batch size, C_max = max conformers in batch, A_max = max atoms in batc
 
 ---
 
-## Alternative Conformer Sources
-
-The pipeline supports three modes (controlled by `data.conformer_source`):
-
-| Mode | Source | Use Case |
-|------|--------|----------|
-| `cycpeptmpdb` (default) | Trajectory PDB files | Full MD simulation data |
-| `pdb` | Directory of single PDB files | External conformer sets |
-| `smiles` | SMILES strings in CSV | RDKit-generated conformers (ETKDGv3 + MMFF/UFF) |
-
----
-
 ## Config Reference
 
 ```yaml
@@ -211,12 +198,10 @@ paths:
   cache_file: data/cache_traj_water_noH.pt
 
 data:
-  conformer_source: cycpeptmpdb   # cycpeptmpdb | pdb | smiles
   target_col: PAMPA               # CSV column to predict
   env: [water]                    # environment(s): [water], [hexane], [water, hexane]
   n_conformers: 10                # frames per env per molecule at train time
   rep_frame_only: false           # single frame mode
-  one_hot_formal_charge: false    # scalar (1-dim) vs one-hot (3-dim) charge
   remove_h: true                  # strip hydrogens
 ```
 
@@ -239,3 +224,36 @@ data:
 
 5. **Mask-based padding** — Variable-size molecules and conformer counts are handled via boolean
    masks (`atom_mask`, `conformer_mask`), keeping batching simple and GPU-friendly.
+
+---
+
+## Sanity Checks
+
+The pipeline enforces several invariants to catch corrupt or malformed data early.
+
+### Single connected fragment (`graph_builder.py :: mol_to_graph`)
+
+Each molecule must be a single connected component — no disconnected fragments. A PDB parsing error or broken bond table can silently produce multiple fragments, which would be meaningless as GNN input. Checked via `rdmolops.GetMolFrags(mol)` before featurization; raises `ValueError` if fragment count != 1.
+
+### Cross-frame topology consistency (`pdb_loader.py :: load_frames_from_traj_pdb`)
+
+Within a single trajectory, `node_feat`, `adj`, and `bond_types` must be identical across all frames. These encode molecular topology (atom types, bonding), which is invariant across MD conformers — only `dist` and `coords` should change. The first frame's topology is used as the reference; any subsequent frame that disagrees raises `ValueError`.
+
+### Cross-environment topology consistency (`mol_featurizer.py :: featurize_single_molecule`)
+
+When loading multiple environments (water, hexane) for the same molecule, topology arrays must also match across environments. The same molecule in different solvents must have the same atom graph. Checked after all envs are loaded; raises `ValueError` on mismatch.
+
+---
+
+## Pitfalls
+
+### RDKit implicit hydrogen counts from PDB files
+
+When loading a PDB with `Chem.MolFromPDBBlock(block, removeHs=True)`, RDKit strips explicit H atoms and then **infers implicit Hs from valence rules** during sanitization. These inferred counts may not match the actual hydrogens in the PDB (e.g. unusual protonation states, non-standard residues). To preserve the true PDB hydrogen counts:
+
+1. Load with `removeHs=False` first
+2. Count each heavy atom's H neighbors: `sum(1 for n in atom.GetNeighbors() if n.GetAtomicNum() == 1)`
+3. Store the count as an atom property
+4. Call `Chem.RemoveHs(mol)`, then `atom.SetNumExplicitHs(count)` + `atom.SetNoImplicit(True)`
+
+This ensures `atom.GetTotalNumHs()` returns the PDB's actual H count, not RDKit's guess. See `src/featurization/pdb_loader.py` for the implementation.

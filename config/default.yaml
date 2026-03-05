@@ -7,19 +7,16 @@ paths:
   data_dir: data/                  # directory containing the CSV file
   csv_file: CycPeptMPDB-4D.csv    # relative to data_dir
   traj_dir: /home/liuw/GitHub/Data/CycPeptMPDB_4D   # root of CycPeptMPDB_4D (cycpeptmpdb mode)
-  pdb_dir: null                    # set to pdb subdirectory name if conformer_source=pdb
   log_dir: experiments/            # base directory for run outputs
   load_checkpoint: null            # path to .pth file to resume from
-  cache_file: null                 # REQUIRED: e.g. data/cache_traj_water_noH.pt (from traj_preprocess.py)
+  cache_file: null                 # REQUIRED: e.g. data/cache_traj_water_noH.pt (from preprocess_trajectories.py)
 
 # Data
 data:
-  conformer_source: cycpeptmpdb    # 'smiles' | 'pdb' | 'cycpeptmpdb'
   target_col: PAMPA                # column name in CSV to use as regression target
   env: [water, hexane]                     # environment(s) to use: [water], [hexane], [water, hexane]
   rep_frame_only: false            # true = standalone (1 conformer); false = ensemble (n_conformers frames)
   n_conformers: 10                 # frames sampled per molecule in ensemble mode
-  ff: mmff                         # force field for smiles mode
   split: null                      # null = random 80/10/10; set to int for pre-defined split column
   batch_size: 32
   num_workers: 4

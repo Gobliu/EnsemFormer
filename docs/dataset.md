@@ -72,7 +72,7 @@ Note: graph topology is bond-based, not distance-cutoff-based.
 
 Current training uses a cache-first workflow:
 
-1. Run preprocessing once (`scripts/traj_preprocess.py`) to create `.pt` cache files.
+1. Run preprocessing once (`scripts/preprocess_trajectories.py`) to create `.pt` cache files.
 2. Configure `paths.cache_file` in YAML.
 3. `ConformerEnsembleDataModule` loads cached molecules from `.pt` (it does not parse trajectory PDBs during training).
 4. At runtime, it applies `env`, `n_conformers`, and `rep_frame_only`, then collates padded tensors.

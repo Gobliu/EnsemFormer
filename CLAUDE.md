@@ -10,7 +10,7 @@ EnsemFormer (CycloFormer) combines 3 molecular GNN models for ensemble-based mem
 - **SE3-Transformer**: github.com/FabianFuchsML/se3-transformer-public (MIT, NeurIPS 2020) — replaced with NVIDIA version (github.com/NVIDIA/DeepLearningExamples/.../SE3Transformer)
 - **CPMP**: github.com/panda1103/CPMP (Apache 2.0, 2025) — Cyclic Peptide Membrane Permeability, based on MAT framework
 
-Reference upstream repos cloned in `references/` (gitignored).
+Reference upstream repos cloned in `references/` (tracked in git; only `cpmp/data/`, `cpmp/saved_model/`, `cpmp/train_*/` are gitignored).
 
 ## Unification Strategy
 Target: Python 3.10 + PyTorch 2.5.1 single env.
@@ -38,7 +38,6 @@ N conformers -> [shared GNN backbone] -> conformer embeddings (B, N_conf, d_gnn)
 - `config/default.yaml` — all hyperparameters
 - `scripts/main_train.py` — training entrypoint
 - `models/Wrapper.py` — abstract Module base class
-- `OldCode/` — legacy code (3 separate model implementations, old environments)
 
 ### Model Switching
 ```bash
@@ -61,6 +60,10 @@ Key columns in `data/CycPeptMPDB-4D.csv` (use CSV column names as-is for identif
 - `Water_RepFrame` — representative MD frame index for water trajectory (int)
 - `Hexane_RepFrame` — representative MD frame index for hexane trajectory (int)
 - `split_0`, `split_1`, ... — predefined train/val/test split columns
+
+## Coding Rules
+- **No silent fallbacks**: Never silently default to a fallback value. Always raise an explicit error (KeyError, ValueError, etc.) when encountering unexpected or missing data.
+- **Ignore `references/`**: The `references/` directory contains read-only upstream repo clones. Never search, check, or edit files in it. Only look at project code under `src/`, `scripts/`, `tests/`, `config/`, `docs/`, `models/`.
 
 ## Dependencies
 Core: PyTorch 2.5.1, DGL (for SE3T), e3nn (for SE3T), RDKit (for CPMP), scikit-learn, pandas, numpy, matplotlib, tqdm.
