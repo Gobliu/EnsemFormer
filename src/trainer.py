@@ -12,7 +12,7 @@ from torch.nn.parallel import DistributedDataParallel
 from src.module import Module
 from src.callbacks import BaseCallback
 from src.loggers import Logger
-from src.data_module import DataModule
+from src.mol_loader import MolLoader
 
 
 def save_state(
@@ -96,7 +96,7 @@ class Trainer:
     def fit(
         self,
         module: Module,
-        datamodule: DataModule,
+        datamodule: MolLoader,
         max_epochs: int,
         callbacks: dict[str, BaseCallback],
         logger: Logger,
@@ -108,7 +108,7 @@ class Trainer:
         ----------
         module : Module
             The model wrapper (e.g. CycloFormerModule).
-        datamodule : DataModule
+        datamodule : MolLoader
         max_epochs : int
         callbacks : dict
             Must contain 'early_stopping' and 'all_metrics' keys.
@@ -186,7 +186,7 @@ class Trainer:
     def validate(
         self,
         module: Module,
-        datamodule: DataModule,
+        datamodule: MolLoader,
         callbacks: dict[str, BaseCallback],
         config: dict,
         epoch: int = -1,
@@ -208,7 +208,7 @@ class Trainer:
     def test(
         self,
         module: Module,
-        datamodule: DataModule,
+        datamodule: MolLoader,
         callbacks: dict[str, BaseCallback],
         config: dict,
         epoch: int = -1,

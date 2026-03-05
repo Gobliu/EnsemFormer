@@ -87,10 +87,12 @@ def featurize_single_molecule(
                 (bond_types, ref_bond_types, "bond type"),
             ]:
                 if not np.array_equal(arr, ref):
-                    raise ValueError(
+                    msg = (
                         f"Cross-env {name} matrix mismatch for {cpmp_id} "
                         f"between {ref_env} and {env}."
                     )
+                    logging.warning(msg)
+                    raise ValueError(msg)
 
         env_frames[env] = frames
 

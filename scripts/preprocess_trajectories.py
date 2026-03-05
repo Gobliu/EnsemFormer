@@ -67,13 +67,13 @@ def main():
 
     for remove_h, tag in [(True, "noH"), (False, "withH")]:
         molecules, d_atom = featurize_all_molecules(
-            csv_path=_REPO_ROOT / paths["data_dir"] / paths["csv_file"],
+            csv_path=_REPO_ROOT / paths["csv_path"],
             target_col=data["target_col"],
             traj_dir=paths["traj_dir"],
             envs=envs,
             remove_h=remove_h,
         )
-        output = out_dir / f"cache_traj_{env_str}_{tag}.pt"
+        output = out_dir / f"thumbnail_traj_{env_str}_{tag}.pt"
         torch.save({"molecules": molecules, "d_atom": d_atom, "envs": sorted(envs)}, output)
         logging.info(f"Saved {len(molecules)} molecules (d_atom={d_atom}, envs={sorted(envs)}) -> {output}")
 

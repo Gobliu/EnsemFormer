@@ -1,15 +1,15 @@
-"""Smoke tests for ConformerEnsembleDataset and conformer_collate_fn."""
+"""Smoke tests for MolList and conformer_collate_fn."""
 
 import numpy as np
 import torch
 import pytest
 
-from src.dataset import (
-    ConformerEnsembleMolecule,
-    ConformerEnsembleDataset,
-    ConformerEnsembleDataModule,
+from src.mol_dataset import (
+    MolItem,
+    MolList,
     conformer_collate_fn,
 )
+from src.mol_loader import MolLoader
 
 
 def _make_molecule(n_conformers=3, n_atoms=5, d_atom=25, label=0.5, CycPeptMPDB_ID="test_0"):
@@ -23,7 +23,7 @@ def _make_molecule(n_conformers=3, n_atoms=5, d_atom=25, label=0.5, CycPeptMPDB_
         )
         for _ in range(n_conformers)
     ]
-    return ConformerEnsembleMolecule(nf, adj, bt, conformers, label, CycPeptMPDB_ID)
+    return MolItem(nf, adj, bt, conformers, label, CycPeptMPDB_ID)
 
 
 def test_molecule_n_conformers():
@@ -33,13 +33,13 @@ def test_molecule_n_conformers():
 
 def test_dataset_len():
     mols = [_make_molecule(CycPeptMPDB_ID=str(i)) for i in range(5)]
-    ds = ConformerEnsembleDataset(mols)
+    ds = MolList(mols)
     assert len(ds) == 5
 
 
 def test_dataset_getitem():
     mols = [_make_molecule(CycPeptMPDB_ID=str(i)) for i in range(3)]
-    ds = ConformerEnsembleDataset(mols)
+    ds = MolList(mols)
     mol = ds[1]
     assert mol.CycPeptMPDB_ID == "1"
 
@@ -107,7 +107,7 @@ def test_topology_broadcast():
 
 
 def _make_selector(rep_frame_only=True, n_conformers=None):
-    selector = ConformerEnsembleDataModule.__new__(ConformerEnsembleDataModule)
+    selector = MolLoader.__new__(MolLoader)
     selector._rep_frame_only = rep_frame_only
     selector._n_conformers = n_conformers
     return selector

@@ -8,12 +8,11 @@
 
 # Paths
 paths:
-  data_dir: data/
-  csv_file: thumb.csv
+  csv_path: data/thumb.csv
   traj_dir: data/
   log_dir: experiments/
   load_checkpoint: null
-  cache_file: null                 # REQUIRED: e.g. data/cache_traj_water_noH.pt (from preprocess_trajectories.py)
+  cache_file: null                 # REQUIRED: e.g. data/thumbnail_traj_water_noH.pt (from preprocess_trajectories.py)
 
 # Data
 data:
@@ -21,7 +20,7 @@ data:
   env: [water]
   rep_frame_only: false
   n_conformers: 5
-  split: null
+  split: 0                         # run: python scripts/generate_splits.py --csv data/thumb.csv
   batch_size: 4
   num_workers: 0
   seed: 42

@@ -10,8 +10,11 @@ import logging
 import math
 import os
 import pathlib
+import random
 from functools import wraps
 from typing import Union
+
+import numpy as np
 
 import torch
 import torch.distributed as dist
@@ -21,7 +24,17 @@ from torch.nn.init import (
     _no_grad_normal_,
     _no_grad_uniform_,
 )
-from torch.utils.data import Dataset
+
+
+def seed_everything(seed: int) -> None:
+    """Seed Python, NumPy, and PyTorch (CPU + all GPUs) for reproducibility."""
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def str2bool(v: Union[bool, str]) -> bool:
@@ -112,25 +125,6 @@ def using_tensor_cores(amp: bool) -> bool:
     major_cc, _ = torch.cuda.get_device_capability()
     return (amp and major_cc >= 7) or major_cc >= 8
 
-
-def get_split_sizes(full_dataset: Dataset) -> tuple[int, int, int]:
-    """Return an 80/10/10 split for a dataset length.
-
-    Parameters
-    ----------
-    full_dataset : Dataset
-        The full dataset instance.
-
-    Returns
-    -------
-    tuple[int, int, int]
-        Train/val/test lengths that sum to ``len(full_dataset)``.
-    """
-    len_full = len(full_dataset)
-    len_train = int(0.8 * len_full)
-    len_test = int(0.1 * len_full)
-    len_val = len_full - len_train - len_test
-    return len_train, len_val, len_test
 
 
 def get_next_version(log_dir: pathlib.Path) -> int:

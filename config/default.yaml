@@ -4,12 +4,11 @@
 
 # Paths
 paths:
-  data_dir: data/                  # directory containing the CSV file
-  csv_file: CycPeptMPDB-4D.csv    # relative to data_dir
+  csv_path: data/CycPeptMPDB-4D.csv   # full path to the CSV file
   traj_dir: /home/liuw/GitHub/Data/CycPeptMPDB_4D   # root of CycPeptMPDB_4D (cycpeptmpdb mode)
   log_dir: experiments/            # base directory for run outputs
   load_checkpoint: null            # path to .pth file to resume from
-  cache_file: null                 # REQUIRED: e.g. data/cache_traj_water_noH.pt (from preprocess_trajectories.py)
+  cache_file: null                 # REQUIRED: e.g. data/thumbnail_traj_water_noH.pt (from preprocess_trajectories.py)
 
 # Data
 data:
@@ -17,7 +16,7 @@ data:
   env: [water, hexane]                     # environment(s) to use: [water], [hexane], [water, hexane]
   rep_frame_only: false            # true = standalone (1 conformer); false = ensemble (n_conformers frames)
   n_conformers: 10                 # frames sampled per molecule in ensemble mode
-  split: null                      # null = random 80/10/10; set to int for pre-defined split column
+  split: 0                         # index of split_{i} column in CSV; run generate_splits.py to create
   batch_size: 32
   num_workers: 4
   seed: 42

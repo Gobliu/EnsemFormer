@@ -86,8 +86,9 @@ def main():
         get_local_rank,
         print_parameters_count,
         get_next_version,
+        seed_everything,
     )
-    from src.dataset import ConformerEnsembleDataModule
+    from src.mol_loader import MolLoader
     from src.networks.cycloformer_model import CycloFormerModule
     from src.trainer import Trainer
     from src.callbacks import EarlyStoppingCallback, AllMetricsCallback
@@ -97,7 +98,7 @@ def main():
     local_rank = get_local_rank()
     world_size = dist.get_world_size() if dist.is_initialized() else 1
 
-    torch.manual_seed(config["data"]["seed"])
+    seed_everything(config["data"]["seed"])
 
     log_level = (
         logging.CRITICAL
@@ -133,9 +134,8 @@ def main():
     cfg_env = data_cfg["env"]
     env = cfg_env if isinstance(cfg_env, list) else [cfg_env]
 
-    datamodule = ConformerEnsembleDataModule(
-        data_dir=_REPO_ROOT / paths_cfg["data_dir"],
-        csv_path=paths_cfg["csv_file"],
+    datamodule = MolLoader(
+        csv_path=_REPO_ROOT / paths_cfg["csv_path"],
         cache_file=cache_file,
         env=env,
         n_conformers=data_cfg["n_conformers"],
@@ -143,7 +143,6 @@ def main():
         split=data_cfg["split"],
         batch_size=data_cfg["batch_size"],
         num_workers=data_cfg["num_workers"],
-        seed=data_cfg["seed"],
     )
 
     # ------------------------------------------------------------------

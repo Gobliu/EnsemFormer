@@ -4,6 +4,7 @@ import logging
 
 import numpy as np
 from rdkit import Chem
+from rdkit.Chem import rdmolops
 
 from src.featurization.graph_builder import mol_to_graph
 
@@ -81,6 +82,10 @@ def load_frames_from_traj_pdb(
         mol = Chem.MolFromPDBBlock(frame_blocks[idx], removeHs=False, sanitize=True)
         if mol is None:
             raise ValueError(f"RDKit failed to parse frame {idx} of {traj_path}")
+        if len(rdmolops.GetMolFrags(mol)) != 1:
+            msg = f"Frame {idx} of {traj_path} has disconnected fragments."
+            logging.warning(msg)
+            raise RuntimeError(msg)
         if remove_h:
             # Record PDB H counts on heavy atoms before stripping
             for atom in mol.GetAtoms():
