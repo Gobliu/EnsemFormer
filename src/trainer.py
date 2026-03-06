@@ -9,14 +9,14 @@ import torch.distributed as dist
 from torch.utils.data import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel
 
-from src.module import Module
+from src.networks.cycloformer_model import CycloFormerModule
 from src.callbacks import BaseCallback
 from src.loggers import Logger
 from src.mol_loader import MolLoader
 
 
 def save_state(
-    modelmodule: Module,
+    modelmodule: CycloFormerModule,
     epoch: int,
     path: pathlib.Path,
     callbacks: dict[str, BaseCallback],
@@ -50,7 +50,7 @@ def save_state(
 
 
 def load_state(
-    modelmodule: Module,
+    modelmodule: CycloFormerModule,
     path: pathlib.Path,
     callbacks: dict[str, BaseCallback],
 ) -> int:
@@ -95,7 +95,7 @@ class Trainer:
 
     def fit(
         self,
-        module: Module,
+        module: CycloFormerModule,
         datamodule: MolLoader,
         max_epochs: int,
         callbacks: dict[str, BaseCallback],
@@ -185,7 +185,7 @@ class Trainer:
 
     def validate(
         self,
-        module: Module,
+        module: CycloFormerModule,
         datamodule: MolLoader,
         callbacks: dict[str, BaseCallback],
         config: dict,
@@ -207,7 +207,7 @@ class Trainer:
 
     def test(
         self,
-        module: Module,
+        module: CycloFormerModule,
         datamodule: MolLoader,
         callbacks: dict[str, BaseCallback],
         config: dict,

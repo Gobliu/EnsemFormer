@@ -60,7 +60,7 @@ class MolLoader:
     def __init__(
         self,
         csv_path,
-        cache_file: str = None,
+        cache_file: str | pathlib.Path | None = None,
         env: list[str] | str | None = None,
         n_conformers: int | None = None,
         rep_frame_only: bool = False,
@@ -100,6 +100,7 @@ class MolLoader:
         df = pd.read_csv(self._csv_path)
 
         logging.info(f"Loading preprocessed molecules from cache: {self._cache_file}")
+        assert self._cache_file is not None  # guaranteed by __init__ check
         data = torch.load(self._cache_file, weights_only=False)
         raw_molecules = data["molecules"]
         self._d_atom = data["d_atom"]
@@ -216,7 +217,13 @@ class MolLoader:
                         f"{rep_idx_1b} (valid 1..{len(env_confs)})."
                     )
                 env_confs = [env_confs[rep_idx_1b - 1]]
-            elif self._n_conformers is not None and len(env_confs) > self._n_conformers:
+            elif self._n_conformers is not None:
+                if len(env_confs) < self._n_conformers:
+                    raise ValueError(
+                        f"Env '{env}' has {len(env_confs)} conformers in the cache, "
+                        f"but n_conformers={self._n_conformers} was requested. "
+                        f"Reduce n_conformers or rebuild the cache with more frames."
+                    )
                 chosen = np.linspace(0, len(env_confs) - 1, self._n_conformers, dtype=int)
                 env_confs = [env_confs[i] for i in chosen]
             confs.extend(env_confs)

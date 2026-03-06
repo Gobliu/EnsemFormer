@@ -1,13 +1,13 @@
 """Training-loop methods for CycloFormerModule (mixin).
 
-Implements the abstract interface from ``src.module.Module``:
-configure_optimizers, train_one_epoch, evaluate_one_epoch, predict.
+Provides: configure_optimizers, train_one_epoch, evaluate_one_epoch, predict.
 """
 
 import types
 
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 from src.utils import to_device
 
@@ -16,9 +16,18 @@ class CycloFormerTrainingMixin:
     """Mixin providing training / evaluation / inference methods.
 
     Expects the host class to have: ``model`` (a CycloFormerCore or DDP-wrapped
-    CycloFormerCore), ``loss_fn``, ``device``, ``local_rank``, ``forward()``,
-    and ``_get_tqdm()``.
+    CycloFormerCore), ``loss_fn``, ``device``, ``local_rank``, and ``forward()``.
     """
+
+    def _get_tqdm(self, dataloader, desc, disable, leave=False):
+        return tqdm(
+            enumerate(dataloader),
+            total=len(dataloader),
+            unit="batch",
+            desc=desc,
+            disable=disable,
+            leave=leave,
+        )
 
     def configure_optimizers(self, config: dict):
         """Instantiate AdamW optimizer and cosine-annealing LR scheduler."""

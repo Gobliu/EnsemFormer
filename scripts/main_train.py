@@ -148,49 +148,7 @@ def main():
     # ------------------------------------------------------------------
     # Model
     # ------------------------------------------------------------------
-    gnn_cfg = config["gnn"]
-    tf_cfg = config["conformer_transformer"]
-    head_cfg = config["head"]
-
-    gnn_type = gnn_cfg["type"]
-    if gnn_type == "egnn":
-        d_gnn = gnn_cfg["hidden_nf"]
-    elif gnn_type == "se3t":
-        d_gnn = gnn_cfg["num_degrees"] * gnn_cfg["num_channels"]
-    else:
-        d_gnn = gnn_cfg["d_model"]
-
-    # Build SE3T-specific kwargs with renamed keys
-    gnn_kwargs = {k: v for k, v in gnn_cfg.items()
-                  if k not in ("type", "mode", "hidden_nf", "d_model", "use_bond_type")}
-    # Rename se3t-prefixed keys for SE3TBackbone constructor
-    if gnn_type == "se3t":
-        rename_map = {
-            "se3t_num_layers": "num_layers",
-            "se3t_num_heads": "num_heads",
-            "se3t_norm": "norm",
-            "se3t_use_layer_norm": "use_layer_norm",
-            "se3t_low_memory": "low_memory",
-        }
-        gnn_kwargs = {rename_map.get(k, k): v for k, v in gnn_kwargs.items()}
-
-    modelmodule = CycloFormerModule(
-        gnn_type=gnn_type,
-        d_atom=datamodule.d_atom,
-        d_gnn=d_gnn,
-        d_model=tf_cfg["d_model"],
-        n_tf_heads=tf_cfg["n_heads"],
-        n_tf_layers=tf_cfg["n_layers"],
-        d_ff=tf_cfg["d_ff"],
-        dropout=tf_cfg["dropout"],
-        pooling=tf_cfg["pooling"],
-        max_conformers=tf_cfg["max_conformers"],
-        device=device,
-        local_rank=local_rank,
-        mode=gnn_cfg["mode"],
-        use_bond_type=gnn_cfg["use_bond_type"],
-        **gnn_kwargs,
-    )
+    modelmodule = CycloFormerModule.from_config(config, datamodule.d_atom, device, local_rank)
 
     modelmodule.model.to(device)
 
@@ -199,7 +157,7 @@ def main():
 
     if is_distributed:
         from torch.nn.parallel import DistributedDataParallel
-        modelmodule.model = DistributedDataParallel(
+        modelmodule.model = DistributedDataParallel(  # type: ignore[assignment]
             modelmodule.model,
             device_ids=[local_rank] if device.type == "cuda" else None,
             output_device=local_rank if device.type == "cuda" else None,

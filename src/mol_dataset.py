@@ -106,7 +106,6 @@ def conformer_collate_fn(
         'dist'           : FloatTensor (B, N_conf_max, N_atoms_max, N_atoms_max)
         'coords'         : FloatTensor (B, N_conf_max, N_atoms_max, 3)
         'atom_mask'      : BoolTensor  (B, N_atoms_max) — True for real atoms
-        'conformer_mask' : BoolTensor  (B, N_conf_max) — True for real conformers
         'target'         : FloatTensor (B, 1)
         'bond_type'      : LongTensor  (B, N_conf_max, N_atoms_max, N_atoms_max)  — if available
     """
@@ -123,11 +122,16 @@ def conformer_collate_fn(
     # Per-conformer arrays
     dist          = np.full((B, N_conf_max, N_atoms_max, N_atoms_max), 1e6, dtype=np.float32)
     coords        = np.zeros((B, N_conf_max, N_atoms_max, 3), dtype=np.float32)
-    conformer_mask = np.zeros((B, N_conf_max), dtype=bool)
     atom_mask     = np.zeros((B, N_atoms_max), dtype=bool)
     targets       = np.zeros((B, 1), dtype=np.float32)
 
+    n_conf_expected = batch[0].n_conformers
     for i, mol in enumerate(batch):
+        assert mol.node_feat.shape[0] > 0, f"Molecule {i} has zero atoms."
+        assert mol.n_conformers == n_conf_expected, (
+            f"Molecule {i} ({mol.CycPeptMPDB_ID}) has {mol.n_conformers} conformers, "
+            f"expected {n_conf_expected}. Check n_conformers / env config."
+        )
         targets[i, 0] = mol.y
         n_a = mol.node_feat.shape[0]
         atom_mask[i, :n_a] = True
@@ -141,7 +145,6 @@ def conformer_collate_fn(
         for j, (d, pos) in enumerate(mol.conformers):
             dist[i, j, :n_a, :n_a] = d
             coords[i, j, :n_a, :]  = pos
-            conformer_mask[i, j]   = True
 
     # Broadcast topology to conformer dimension.
     # .contiguous() is required: expand() returns a stride-0 view that breaks
@@ -156,7 +159,6 @@ def conformer_collate_fn(
         "dist":           torch.from_numpy(dist),
         "coords":         torch.from_numpy(coords),
         "atom_mask":      torch.from_numpy(atom_mask),
-        "conformer_mask": torch.from_numpy(conformer_mask),
         "target":         torch.from_numpy(targets),
         "bond_type":      bond_type_t,
     }

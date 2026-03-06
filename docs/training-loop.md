@@ -50,19 +50,18 @@ init_distributed()   (src/utils.py)
 local_rank = get_local_rank()
 world_size = dist.get_world_size()  (or 1)
 device = cuda:{local_rank}  (or cpu)
-torch.manual_seed(config['data']['seed'])
+seed_everything(config['data']['seed'])   # seeds torch, numpy, and Python random
 
 logging: INFO on rank 0 only (or always silent if --silent)
 ```
 
 ---
 
-## Step 2 — Data (`src/dataset.py`)
+## Step 2 — Data (`src/mol_loader.py`, `src/mol_dataset.py`)
 
 ```
-ConformerEnsembleDataModule(
-    data_dir    = repo_root / paths.data_dir,
-    csv_path    = paths.csv_file,
+MolLoader(
+    csv_path    = repo_root / paths.csv_path,
     cache_file  = paths.cache_file,       # .pt from preprocess_trajectories.py
     env         = data.env,               # [water], [hexane], [water, hexane]
     n_conformers = data.n_conformers,     # frames per env per molecule
@@ -70,23 +69,24 @@ ConformerEnsembleDataModule(
     split       = data.split,             # 0-9 cross-val index
     batch_size  = data.batch_size,
     num_workers = data.num_workers,
-    seed        = data.seed,
 )
   │
-  ├─ ConformerEnsembleDataset  (train)   ──┐
-  ├─ ConformerEnsembleDataset  (val)       ├─ split from CSV
-  └─ ConformerEnsembleDataset  (test)    ──┘
-       each molecule → ConformerEnsembleMolecule
-         .node_feat  : (N_atoms, F)
-         .conformers : list[(dist, coords)]
-         .y          : float  (regression target)
+  ├─ MolList  (train)   ──┐
+  ├─ MolList  (val)       ├─ split from CSV
+  └─ MolList  (test)    ──┘
+       each molecule → MolItem
+         .node_feat   : (N_atoms, F)
+         .adj         : (N_atoms, N_atoms)
+         .bond_types  : (N_atoms, N_atoms)
+         .conformers  : list[(dist, coords)]
+         .label       : float  (regression target)
 
   conformer_collate_fn  pads atoms & conformers → batch dict
 ```
 
 ---
 
-## Step 3 — Model (`src/networks/cycloformer.py`)
+## Step 3 — Model (`src/networks/cycloformer_model.py`)
 
 ```
 CycloFormerModule(
@@ -101,15 +101,19 @@ CycloFormerModule(
     pooling    = conformer_transformer.pooling,    # 'cls' | 'mean'
     max_conformers = conformer_transformer.max_conformers,
     mode       = gnn.mode,          # 'ensemble' | 'standalone'
+    use_bond_type = gnn.use_bond_type,
     **gnn_kwargs,                   # encoder-specific params
 )
   │
   └─ .model (CycloFormerCore)
        ├─ .backbone          → EGNNBackbone | CPMPBackbone | SE3TBackbone
        ├─ .conformer_encoder → Transformer over conformer tokens  (ensemble mode)
-       ├─ .head              → 2-layer MLP → scalar
+       ├─ .head              → MLPHead(d_model, d_model // 2, dropout)
        ├─ .proj              → optional Linear(d_gnn → d_model)
        └─ .cls_token         → learnable CLS prepended to conformer sequence
+
+Note: config/default.yaml has a `head` section (d_hidden, dropout) but the model
+currently hardcodes MLPHead(d_model, d_model // 2, dropout) and does not read it.
 
 DDP wrapping: modelmodule.model (CycloFormerCore) is wrapped with
               DistributedDataParallel, covering all learnable parameters.
@@ -152,9 +156,9 @@ AllMetricsCallback(logger, rescale_factor=1, prefix='valid')
 ## Step 6 — Training Loop (`src/trainer.py::Trainer.fit`)
 
 ```
-module.configure_optimizers(config)
+module.configure_optimizers(config)   (src/networks/cycloformer_training.py)
   └─ AdamW(lr=training.learning_rate, weight_decay=training.weight_decay)
-     + optional LR scheduler (if configured)
+     + CosineAnnealingLR(T_max=training.epochs)   # always enabled
 
 grad_scaler = GradScaler(enabled=training.amp)
 
@@ -178,7 +182,7 @@ for epoch_idx in range(epoch_start, training.epochs):
     │       │  return mean train loss                                 │
     │       └─────────────────────────────────────────────────────────┘
     │
-    │  if lr_scheduler: lr_scheduler.step()     (once per epoch)
+    │  lr_scheduler.step()   (CosineAnnealingLR, once per epoch)
     │
     │  if DDP: dist.all_reduce(loss) / world_size
     │
@@ -252,6 +256,5 @@ Each `.pth` contains:
 
 ## LR Schedule
 
-Default: no scheduler (constant LR).
-To enable, configure a scheduler inside `module.configure_optimizers`.
+Default: `CosineAnnealingLR` with `T_max = training.epochs`.
 Scheduler steps once per epoch (after `train_one_epoch`, before validation).

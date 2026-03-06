@@ -11,7 +11,6 @@ Architecture:
 import torch
 import torch.nn as nn
 
-from src.module import Module
 from src.networks.graph_utils import bond_type_to_one_hot
 from src.networks.conformer_transformer import ConformerTransformerEncoder, MLPHead
 from src.networks.egnn_backbone import EGNNBackbone, get_edges_batch
@@ -36,7 +35,7 @@ class CycloFormerCore(nn.Module):
         GNN encoder output dimension.
     d_model : int
         Conformer Transformer width.
-    n_tf_heads, n_tf_layers, d_ff : int
+    n_tf_heads, n_tf_layers : int
         Conformer Transformer hyperparameters.
     dropout : float
     pooling : str
@@ -57,7 +56,6 @@ class CycloFormerCore(nn.Module):
         d_model: int,
         n_tf_heads: int,
         n_tf_layers: int,
-        d_ff: int,
         dropout: float,
         pooling: str,
         max_conformers: int,
@@ -120,7 +118,6 @@ class CycloFormerCore(nn.Module):
             d_model=d_model,
             n_heads=n_tf_heads,
             n_layers=n_tf_layers,
-            d_ff=d_ff,
             dropout=dropout,
             max_conformers=max_conformers,
         )
@@ -181,7 +178,7 @@ class CycloFormerCore(nn.Module):
         # Masked mean-pool: average only over real atoms, not padding
         h_graphs = h_flat.view(B * N_conf, N_atoms, -1)  # (B*N_conf, N_atoms, d)
         mask_bc = atom_mask.unsqueeze(1).expand(-1, N_conf, -1).reshape(B * N_conf, N_atoms, 1).to(dtype=h_graphs.dtype)
-        h_pooled = (h_graphs * mask_bc).sum(dim=1) / mask_bc.sum(dim=1).clamp(min=1)
+        h_pooled = (h_graphs * mask_bc).sum(dim=1) / mask_bc.sum(dim=1)
         return h_pooled.view(B, N_conf, -1)  # (B, N_conf, d_gnn)
 
     def _encode_conformers_cpmp(self, batch: dict) -> torch.Tensor:
@@ -191,7 +188,6 @@ class CycloFormerCore(nn.Module):
             'node_feat'      : Tensor (B, N_conf, N_atoms, F)
             'adj'            : Tensor (B, N_conf, N_atoms, N_atoms)
             'dist'           : Tensor (B, N_conf, N_atoms, N_atoms)
-            'conformer_mask' : BoolTensor (B, N_conf)
             'atom_mask'      : BoolTensor (B, N_atoms)
             'bond_type'      : LongTensor (B, N_conf, N_atoms, N_atoms) -- optional
 
@@ -230,7 +226,6 @@ class CycloFormerCore(nn.Module):
         Expects batch to contain:
             'node_feat'      : Tensor (B, N_conf, N_atoms, F)
             'coords'         : Tensor (B, N_conf, N_atoms, 3)
-            'conformer_mask' : BoolTensor (B, N_conf)
             'atom_mask'      : BoolTensor (B, N_atoms) -- optional
             'bond_type'      : LongTensor (B, N_conf, N_atoms, N_atoms) -- optional
 
@@ -284,9 +279,9 @@ class CycloFormerCore(nn.Module):
         Parameters
         ----------
         batch : dict with keys:
-            (EGNN)  'node_feat', 'coords', 'atom_mask', 'conformer_mask'
-            (CPMP)  'node_feat', 'adj', 'dist', 'atom_mask', 'conformer_mask'
-            (SE3T)  'node_feat', 'coords', 'conformer_mask', optionally 'atom_mask'
+            (EGNN)  'node_feat', 'coords', 'atom_mask'
+            (CPMP)  'node_feat', 'adj', 'dist', 'atom_mask'
+            (SE3T)  'node_feat', 'coords', 'atom_mask'
 
         Returns
         -------
@@ -297,22 +292,14 @@ class CycloFormerCore(nn.Module):
 
         # ---- Standalone mode: skip conformer transformer ----
         if self.mode == "standalone":
-            conf_mask = batch["conformer_mask"]  # (B, N_conf) BoolTensor
-            mask = conf_mask.unsqueeze(-1).to(dtype=tokens.dtype)  # (B, N_conf, 1)
-            pooled = (tokens * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
-            return self.head(pooled)  # (B, 1)
+            preds = self.head(tokens)  # (B, N_conf, 1)
+            return preds.mean(dim=1)   # (B, 1)
 
         # ---- Ensemble mode: conformer transformer ----
         cls = self.cls_token.expand(B, -1, -1)  # (B, 1, d_model)
         tokens = torch.cat([cls, tokens], dim=1)  # (B, N_conf+1, d_model)
 
-        # Build key_padding_mask: True means IGNORE.
-        conf_mask = batch["conformer_mask"]  # (B, N_conf) BoolTensor
-        padding_mask = ~conf_mask  # (B, N_conf)
-        cls_col = torch.zeros(B, 1, dtype=torch.bool, device=padding_mask.device)
-        key_padding_mask = torch.cat([cls_col, padding_mask], dim=1)  # (B, N_conf+1)
-
-        out = self.conformer_encoder(tokens, key_padding_mask)  # (B, N_conf+1, d_model)
+        out = self.conformer_encoder(tokens)  # (B, N_conf+1, d_model)
 
         if self.pooling == "cls":
             pooled = out[:, 0, :]
@@ -322,7 +309,7 @@ class CycloFormerCore(nn.Module):
         return self.head(pooled)  # (B, 1)
 
 
-class CycloFormerModule(CycloFormerTrainingMixin, Module):
+class CycloFormerModule(CycloFormerTrainingMixin):
     """CycloFormer model: thin shell that holds CycloFormerCore and training state.
 
     All learnable parameters live in ``self.model`` (a CycloFormerCore instance).
@@ -336,7 +323,7 @@ class CycloFormerModule(CycloFormerTrainingMixin, Module):
     d_atom : int
     d_gnn : int
     d_model : int
-    n_tf_heads, n_tf_layers, d_ff : int
+    n_tf_heads, n_tf_layers : int
     dropout : float
     pooling : str
     max_conformers : int
@@ -355,7 +342,6 @@ class CycloFormerModule(CycloFormerTrainingMixin, Module):
         d_model: int,
         n_tf_heads: int,
         n_tf_layers: int,
-        d_ff: int,
         dropout: float,
         pooling: str,
         max_conformers: int,
@@ -365,7 +351,10 @@ class CycloFormerModule(CycloFormerTrainingMixin, Module):
         use_bond_type: bool = False,
         **gnn_kwargs,
     ):
-        super().__init__(device, local_rank)
+        self.device = device
+        self.local_rank = local_rank
+        self.optimizer = None
+        self.lr_scheduler = None
         self.model = CycloFormerCore(
             gnn_type=gnn_type,
             d_atom=d_atom,
@@ -373,7 +362,6 @@ class CycloFormerModule(CycloFormerTrainingMixin, Module):
             d_model=d_model,
             n_tf_heads=n_tf_heads,
             n_tf_layers=n_tf_layers,
-            d_ff=d_ff,
             dropout=dropout,
             pooling=pooling,
             max_conformers=max_conformers,
@@ -383,9 +371,53 @@ class CycloFormerModule(CycloFormerTrainingMixin, Module):
         )
         self.loss_fn = nn.MSELoss()
 
+    @classmethod
+    def from_config(cls, config: dict, d_atom: int, device, local_rank: int) -> "CycloFormerModule":
+        """Instantiate CycloFormerModule from a config dict.
+
+        Parameters
+        ----------
+        config : dict
+            Full config (must contain 'gnn' and 'conformer_transformer' keys).
+        d_atom : int
+            Atom feature dimension from the dataset featurizer.
+        device : torch.device
+        local_rank : int
+        """
+        gnn_cfg = config["gnn"]
+        tf_cfg = config["conformer_transformer"]
+
+        gnn_type = gnn_cfg["type"]
+        backbone_cfg: dict = gnn_cfg[gnn_type]
+
+        if gnn_type == "egnn":
+            d_gnn = backbone_cfg["hidden_nf"]
+        elif gnn_type == "se3t":
+            d_gnn = backbone_cfg["num_degrees"] * backbone_cfg["num_channels"]
+        else:
+            d_gnn = backbone_cfg["d_model"]
+
+        return cls(
+            gnn_type=gnn_type,
+            d_atom=d_atom,
+            d_gnn=d_gnn,
+            d_model=tf_cfg["d_model"],
+            n_tf_heads=tf_cfg["n_heads"],
+            n_tf_layers=tf_cfg["n_layers"],
+            dropout=tf_cfg["dropout"],
+            pooling=tf_cfg["pooling"],
+            max_conformers=tf_cfg["max_conformers"],
+            device=device,
+            local_rank=local_rank,
+            mode=gnn_cfg["mode"],
+            use_bond_type=gnn_cfg["use_bond_type"],
+            **backbone_cfg,
+        )
+
     def extract_features(self, batch: dict) -> torch.Tensor:
         """Return per-conformer embeddings (B, N_conf, d_model)."""
-        core = self.model.module if hasattr(self.model, "module") else self.model
+        # DDP wraps model in .module; unwrap to access CycloFormerCore methods
+        core: CycloFormerCore = getattr(self.model, "module", self.model)  # type: ignore[assignment]
         return core.extract_features(batch)
 
     def forward(self, batch: dict) -> torch.Tensor:

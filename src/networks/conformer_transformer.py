@@ -15,8 +15,6 @@ class ConformerTransformerEncoder(nn.Module):
         Number of attention heads.
     n_layers : int
         Number of Transformer encoder layers.
-    d_ff : int
-        Feed-forward hidden dimension (typically 2-4x d_model).
     dropout : float
     max_conformers : int
         Maximum number of conformers + 1 (for CLS). Sets positional-encoding
@@ -28,7 +26,6 @@ class ConformerTransformerEncoder(nn.Module):
         d_model: int,
         n_heads: int,
         n_layers: int,
-        d_ff: int,
         dropout: float,
         max_conformers: int,
     ):
@@ -36,7 +33,7 @@ class ConformerTransformerEncoder(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=n_heads,
-            dim_feedforward=d_ff,
+            dim_feedforward=4 * d_model,
             dropout=dropout,
             activation="gelu",
             batch_first=True,
